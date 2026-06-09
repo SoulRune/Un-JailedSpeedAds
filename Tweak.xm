@@ -28,7 +28,8 @@ static NSString *const kKeySpeedVideo = @"SpeedUpVideo";   // speed up ad video,
 static NSString *const kKeyVideoRate  = @"VideoRate";      // playback multiplier, default 8.0
 static NSString *const kKeyWebTimers  = @"CompressTimers"; // compress JS setTimeout/setInterval, default NO
 static NSString *const kKeyWebClock   = @"AccelerateClock"; // also run Date.now/performance.now fast, default NO
-static NSString *const kKeySpeedNative= @"SpeedNativeVideo";// speed every AVPlayer, not just detected ad VCs, default YES
+static NSString *const kKeyForceInline = @"ForceInline";   // force webview video inline (for stuck fullscreen video), default NO
+static NSString *const kKeySpeedNative= @"SpeedNativeVideo";// speed every AVPlayer, not just detected ad VCs, default NO
 static NSString *const kKeyBypassJB   = @"BypassJailbreak";// jailbreak-detect bypass, default YES
 static NSString *const kKeyAppPrefix  = @"enabled-";       // per-app key: enabled-<bundleID>
 
@@ -37,7 +38,8 @@ static BOOL  gActive      = NO;
 static BOOL  gSpeedVideo  = YES;
 static BOOL  gWebTimers   = NO;
 static BOOL  gWebClock    = NO;
-static BOOL  gSpeedNative  = YES;
+static BOOL  gForceInline  = NO;
+static BOOL  gSpeedNative  = NO;
 static float gVideoRate  = 8.0f;
 static int   gAdDepth    = 0;     // >0 while a known ad view-controller is visible
 
@@ -59,6 +61,11 @@ static NSDictionary *loadPrefs(void) {
 static BOOL prefBool(NSDictionary *p, NSString *key, BOOL fallback) {
     id v = p[key];
     return v ? [v boolValue] : fallback;
+}
+
+// Per-app preference key: "<bundleID>-<Suffix>" (e.g. com.x.game-SpeedUpVideo).
+static NSString *appKey(NSString *bid, NSString *suffix) {
+    return [NSString stringWithFormat:@"%@-%@", bid, suffix];
 }
 
 #pragma mark - Debug (build with -DADSPEED_DEBUG)
@@ -474,35 +481,61 @@ static const AdHook kJailbreakHooks[] = {
 // appears we set fast=false, so video ads (which sync the picture to their own clock)
 // don't desync/freeze — they just get playbackRate. Playables (no <video>) keep
 // fast=true and their countdown is accelerated.
-static NSString *webSpeedJS(float rate, BOOL compressTimers, BOOL accelClock) {
-    NSString *timerJS = compressTimers ?
-        @"window.setTimeout=function(f,t){return oST.apply(this,[f,fast?(t||0)/R:(t||0)].concat([].slice.call(arguments,2)));};"
-         "window.setInterval=function(f,t){return oSI.apply(this,[f,fast?(t||0)/R:(t||0)].concat([].slice.call(arguments,2)));};"
-        : @"";
-    NSString *clockJS = accelClock ?
-        @"try{var _l=oDN(),_v=oDN();Date.now=function(){var n=oDN();_v+=(fast?(n-_l)*R:(n-_l));_l=n;return Math.round(_v);};}catch(e){}"
-         "try{if(window.performance&&performance.now){var _opn=performance.now.bind(performance),_pl=_opn(),_pv=_opn();"
-         "performance.now=function(){var n=_opn();_pv+=(fast?(n-_pl)*R:(n-_pl));_pl=n;return _pv;};}}catch(e){}"
-        : @"";
-    return [NSString stringWithFormat:
+// Builds the injected JS from independent layers:
+//   speedVideo:     bump <video> playbackRate (event-driven, so it doesn't fight the
+//                   player and stutter). Honors forceInline.
+//   compressTimers: divide setTimeout/setInterval delays.
+//   accelClock:     run Date.now()/performance.now() fast.
+// The timer/clock layers work on their own (no video speed needed) — they're the path
+// for ads where the video can't be sped up. They auto-pause (`fast=false`) once a
+// <video> is on screen, so they don't desync/freeze a video ad.
+static NSString *webSpeedJS(float rate, BOOL speedVideo, BOOL compressTimers, BOOL accelClock, BOOL forceInline) {
+    NSMutableString *js = [NSMutableString stringWithFormat:
         @"(function(){var R=%0.1f;if(R<1)R=1;"
-         "var oST=window.setTimeout,oSI=window.setInterval,oDN=Date.now;var fast=true;%@%@"
-         "function b(){var v=document.getElementsByTagName('video');if(v.length){fast=false;}"
-         "for(var i=0;i<v.length;i++){try{v[i].setAttribute('playsinline','');v[i].setAttribute('webkit-playsinline','');"
-         "v[i].playsInline=true;v[i].playbackRate=R;}catch(e){}}}"
-         "oSI(b,300);document.addEventListener('play',b,true);document.addEventListener('loadedmetadata',b,true);"
-         "})();", rate, timerJS, clockJS];
+         "var oST=window.setTimeout,oSI=window.setInterval,oDN=Date.now;var fast=true;", rate];
+
+    if (compressTimers) {
+        [js appendString:
+            @"window.setTimeout=function(f,t){return oST.apply(this,[f,fast?(t||0)/R:(t||0)].concat([].slice.call(arguments,2)));};"
+             "window.setInterval=function(f,t){return oSI.apply(this,[f,fast?(t||0)/R:(t||0)].concat([].slice.call(arguments,2)));};"];
+    }
+    if (accelClock) {
+        [js appendString:
+            @"try{var _l=oDN(),_v=oDN();Date.now=function(){var n=oDN();_v+=(fast?(n-_l)*R:(n-_l));_l=n;return Math.round(_v);};}catch(e){}"
+             "try{if(window.performance&&performance.now){var _opn=performance.now.bind(performance),_pl=_opn(),_pv=_opn();"
+             "performance.now=function(){var n=_opn();_pv+=(fast?(n-_pl)*R:(n-_pl));_pl=n;return _pv;};}}catch(e){}"];
+    }
+    if ((compressTimers || accelClock) && speedVideo) {
+        // Only when also fast-forwarding video: pause timer/clock accel while a video is
+        // on screen so the sped video doesn't desync/freeze. When timers run on their own
+        // (video speed off), the user wants the countdown rushed regardless of any video.
+        [js appendString:@"oSI(function(){if(document.getElementsByTagName('video').length)fast=false;},400);"];
+    }
+    if (speedVideo) {
+        NSString *inlineJS = forceInline ?
+            @"x.setAttribute('playsinline','');x.setAttribute('webkit-playsinline','');x.playsInline=true;" : @"";
+        [js appendFormat:
+            @"function setR(x){try{if(x.playbackRate!==R)x.playbackRate=R;}catch(e){}}"
+             "function bv(){var v=document.getElementsByTagName('video');for(var i=0;i<v.length;i++){var x=v[i];%@setR(x);"
+             "if(!x.__asp){x.__asp=1;x.addEventListener('ratechange',function(){if(this.playbackRate<R)this.playbackRate=R;},true);}}}"
+             "oSI(bv,1000);document.addEventListener('play',bv,true);document.addEventListener('loadedmetadata',bv,true);", inlineJS];
+    }
+    [js appendString:@"})();"];
+    return js;
 }
 
 %hook WKWebView
 - (instancetype)initWithFrame:(CGRect)frame configuration:(WKWebViewConfiguration *)configuration {
-    if (gActive && gSpeedVideo && configuration) {
-        // Keep ad video inline: a fullscreen <video> is handed to the native player
-        // (out of reach of our JS), so force inline + autoplay so playbackRate keeps
-        // applying inside the webview.
-        configuration.allowsInlineMediaPlayback = YES;
-        configuration.mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeNone;
-        WKUserScript *s = [[WKUserScript alloc] initWithSource:webSpeedJS(gVideoRate, gWebTimers, gWebClock)
+    if (gActive && (gSpeedVideo || gWebTimers || gWebClock) && configuration) {
+        // Force-inline only when the user opts in AND we're speeding video: a fullscreen
+        // <video> is handed to the native player (out of our JS reach), so this keeps
+        // playbackRate applying — but it rewrites the SDK's webview config and can break
+        // some players (AppLovin).
+        if (gForceInline && gSpeedVideo) {
+            configuration.allowsInlineMediaPlayback = YES;
+            configuration.mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeNone;
+        }
+        WKUserScript *s = [[WKUserScript alloc] initWithSource:webSpeedJS(gVideoRate, gSpeedVideo, gWebTimers, gWebClock, gForceInline)
                                                  injectionTime:WKUserScriptInjectionTimeAtDocumentStart
                                               forMainFrameOnly:NO];
         [configuration.userContentController addUserScript:s];
@@ -559,11 +592,29 @@ static void imageAdded(const struct mach_header *mh, intptr_t slide) {
 
 %ctor {
     @autoreleasepool {
+#ifdef ADSPEED_JAILED
+        // Jailed / sideload build: inject this dylib into an .ipa (TrollStore + TrollFools
+        // or Sideloadly with its "Cydia Substrate" option, which supply the substrate the
+        // hooks need). No package manager, Settings panel or prefs on a non-jailbroken
+        // device, so hard-code the safe subset: always on, webview <video> speed-up only —
+        // no native AVPlayer (would also hit in-game cutscenes you couldn't turn off),
+        // no timer/clock tricks, no ad blocking.
+        #ifndef ADSPEED_JAILED_RATE
+        #define ADSPEED_JAILED_RATE 8.0f
+        #endif
+        gActive = YES;
+        gSpeedVideo = YES;
+        gSpeedNative = NO; gWebTimers = NO; gWebClock = NO;
+        gVideoRate = ADSPEED_JAILED_RATE;
+        if (gVideoRate < 1.0f) gVideoRate = 1.0f;
+        // falls through to the single %init below (logos counts %init across the whole
+        // file ignoring #ifdef, so there must be exactly one in the source).
+#else
         NSDictionary *prefs = loadPrefs();
         gActive = resolveActive(prefs);
 
+        NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
 #ifdef ADSPEED_DEBUG
-        NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"(nil)";
         aspLog(@"==== AdSpeed loaded in %@ ====", bid);
         aspLog(@"prefs file found: %@", prefs ? @"YES" : @"NO");
         aspLog(@"master=%d  appEnabled(%@)=%d  -> active=%d",
@@ -579,16 +630,18 @@ static void imageAdded(const struct mach_header *mh, intptr_t slide) {
 
         if (!gActive) return;
 
-        gSpeedVideo  = prefBool(prefs, kKeySpeedVideo, YES);
-        gWebTimers   = prefBool(prefs, kKeyWebTimers, NO);
-        gWebClock    = prefBool(prefs, kKeyWebClock, NO);
-        gSpeedNative = prefBool(prefs, kKeySpeedNative, YES);
-        id rateVal = prefs[kKeyVideoRate];
+        // Per-app settings, keyed by this app's bundle id (resolved above).
+        gSpeedVideo  = prefBool(prefs, appKey(bid, kKeySpeedVideo), YES);
+        gWebTimers   = prefBool(prefs, appKey(bid, kKeyWebTimers), NO);
+        gWebClock    = prefBool(prefs, appKey(bid, kKeyWebClock), NO);
+        gForceInline = prefBool(prefs, appKey(bid, kKeyForceInline), NO);
+        gSpeedNative = prefBool(prefs, appKey(bid, kKeySpeedNative), NO);
+        id rateVal = prefs[appKey(bid, kKeyVideoRate)];
         gVideoRate = rateVal ? [rateVal floatValue] : 8.0f;
         if (gVideoRate < 1.0f) gVideoRate = 1.0f;
 
-        gInstallAds = prefBool(prefs, kKeyBlockAds, YES);
-        gInstallJB  = prefBool(prefs, kKeyBypassJB, YES);
+        gInstallAds = prefBool(prefs, appKey(bid, kKeyBlockAds), NO);
+        gInstallJB  = prefBool(prefs, appKey(bid, kKeyBypassJB), YES);
 
         installEnabled();                              // classes already loaded
         _dyld_register_func_for_add_image(&imageAdded); // + lazily-loaded ad SDKs
@@ -596,7 +649,9 @@ static void imageAdded(const struct mach_header *mh, intptr_t slide) {
         if (gSpeedVideo) {
             %init(AdContext);
         }
-        // The AVPlayer hook is initialised unconditionally and self-gates on gActive.
+#endif
+        // Single ungrouped %init reached by both builds — installs the AVPlayer + WKWebView
+        // hooks, which self-gate on the flags above.
         %init;
     }
 }

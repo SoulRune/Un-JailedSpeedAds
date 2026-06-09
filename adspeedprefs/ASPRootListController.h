@@ -1,5 +1,4 @@
-#import <Preferences/PSListController.h>
-#import <Preferences/PSSpecifier.h>
+#import "ASPListBase.h"
 
-@interface ASPRootListController : PSListController
+@interface ASPRootListController : ASPListBase
 @end

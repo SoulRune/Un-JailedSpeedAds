@@ -1,8 +1,7 @@
 #import "ASPRootListController.h"
+#import "ASPAppListController.h"
 #import <objc/runtime.h>
-
-static NSString *const kDomain = @"com.34306.adspeed";
-static NSString *const kNotify = @"com.34306.adspeed/reloadPrefs";
+#import <UIKit/UIKit.h>
 
 // Minimal private API surface for enumerating installed apps.
 @interface LSApplicationProxy : NSObject
@@ -17,59 +16,6 @@ static NSString *const kNotify = @"com.34306.adspeed/reloadPrefs";
 @end
 
 @implementation ASPRootListController
-
-// Persist directly to the domain plist so it works regardless of the base class /
-// iOS version, and lands exactly where the tweak reads it
-// (/var/mobile/Library/Preferences/com.34306.adspeed.plist).
-- (NSString *)prefsPathForSpecifier:(PSSpecifier *)specifier {
-    NSString *domain = [specifier propertyForKey:@"defaults"] ?: kDomain;
-    // Store under the jailbreak root. Sandboxed App Store apps cannot read
-    // /var/mobile/Library/Preferences, but the rootless sandbox profile grants
-    // them read access to /var/jb, so the injected tweak can read it there.
-    return [NSString stringWithFormat:@"/var/jb/var/mobile/Library/Preferences/%@.plist", domain];
-}
-
-- (id)readPreferenceValue:(PSSpecifier *)specifier {
-    NSDictionary *settings = [NSDictionary dictionaryWithContentsOfFile:[self prefsPathForSpecifier:specifier]];
-    id value = settings[[specifier propertyForKey:@"key"]];
-    return value ?: [specifier propertyForKey:@"default"];
-}
-
-- (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
-    NSString *path = [self prefsPathForSpecifier:specifier];
-    [[NSFileManager defaultManager] createDirectoryAtPath:[path stringByDeletingLastPathComponent]
-                              withIntermediateDirectories:YES attributes:nil error:nil];
-    NSMutableDictionary *settings = [NSMutableDictionary dictionaryWithContentsOfFile:path] ?: [NSMutableDictionary dictionary];
-    settings[[specifier propertyForKey:@"key"]] = value;
-    [settings writeToFile:path atomically:YES];
-
-    NSString *notification = [specifier propertyForKey:@"PostNotification"];
-    if (notification) {
-        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-                                             (__bridge CFStringRef)notification, NULL, NULL, YES);
-    }
-
-    // Master/sub switches reveal or hide their dependent rows, so rebuild the list.
-    NSString *changed = [specifier propertyForKey:@"key"];
-    if ([changed isEqualToString:@"SpeedUpVideo"] || [changed isEqualToString:@"CompressTimers"]) {
-        _specifiers = nil;
-        [self reloadSpecifiers];
-    }
-}
-
-- (BOOL)boolPref:(NSString *)key default:(BOOL)def {
-    NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:
-        [NSString stringWithFormat:@"/var/jb/var/mobile/Library/Preferences/%@.plist", kDomain]];
-    id v = d[key];
-    return v ? [v boolValue] : def;
-}
-
-// A switch shown as an indented sub-item of the row above it.
-- (PSSpecifier *)subSwitchNamed:(NSString *)name key:(NSString *)key default:(BOOL)def {
-    PSSpecifier *s = [self switchSpecifierNamed:[@"      " stringByAppendingString:name] key:key default:def];
-    [s setProperty:@1 forKey:@"indentationLevel"];
-    return s;
-}
 
 - (NSArray *)installedUserApps {
     LSApplicationWorkspace *ws = [objc_getClass("LSApplicationWorkspace") defaultWorkspace];
@@ -86,90 +32,95 @@ static NSString *const kNotify = @"com.34306.adspeed/reloadPrefs";
     return result;
 }
 
-- (PSSpecifier *)switchSpecifierNamed:(NSString *)name key:(NSString *)key default:(BOOL)def {
-    PSSpecifier *s = [PSSpecifier preferenceSpecifierNamed:name
-                                                   target:self
-                                                      set:@selector(setPreferenceValue:specifier:)
-                                                      get:@selector(readPreferenceValue:)
-                                                   detail:nil
-                                                     cell:PSSwitchCell
-                                                     edit:nil];
-    [s setProperty:kDomain forKey:@"defaults"];
-    [s setProperty:kNotify forKey:@"PostNotification"];
-    [s setProperty:key forKey:@"key"];
-    [s setProperty:@(def) forKey:@"default"];
-    return s;
+- (BOOL)appEnabled:(NSString *)bid {
+    return [self boolPref:[@"enabled-" stringByAppendingString:bid] default:NO];
 }
 
-- (PSSpecifier *)groupNamed:(NSString *)name footer:(NSString *)footer {
-    PSSpecifier *g = [PSSpecifier groupSpecifierWithName:name];
-    if (footer) [g setProperty:footer forKey:@"footerText"];
-    return g;
+// A row that opens the per-app detail page.
+- (PSSpecifier *)appLinkFor:(NSDictionary *)app {
+    PSSpecifier *s = [PSSpecifier preferenceSpecifierNamed:app[@"name"]
+                                                   target:self
+                                                      set:NULL
+                                                      get:NULL
+                                                   detail:[ASPAppListController class]
+                                                     cell:PSLinkCell
+                                                     edit:nil];
+    [s setProperty:@YES forKey:@"isController"];
+    [s setProperty:app[@"id"] forKey:@"bid"];
+    return s;
 }
 
 - (NSArray *)specifiers {
     if (!_specifiers) {
         NSMutableArray *specs = [NSMutableArray array];
 
-        [specs addObject:[self groupNamed:@"General"
-                                   footer:@"Choose which apps Ads Speed runs in below. "
-                                          @"Changes take effect next time the app is launched."]];
-        [specs addObject:[self switchSpecifierNamed:@"Enabled" key:@"Enabled" default:YES]];
-        [specs addObject:[self switchSpecifierNamed:@"Block ads" key:@"BlockAds" default:YES]];
-        [specs addObject:[self switchSpecifierNamed:@"Bypass jailbreak detection" key:@"BypassJailbreak" default:YES]];
+        [specs addObject:[self groupNamed:@"Ads Speed"
+                                   footer:@"Tap an app to configure it. Enabled apps are highlighted and listed on "
+                                          @"top. Changes apply next time the app is launched."]];
+        [specs addObject:[self switchSpecifierNamed:@"Enabled (master)" key:@"Enabled" default:YES]];
 
-        BOOL speedOn  = [self boolPref:@"SpeedUpVideo" default:YES];
-        BOOL timersOn = [self boolPref:@"CompressTimers" default:NO];
-
-        // Fast-forward + its native sub-option.
-        [specs addObject:[self groupNamed:@"Fast-forward ads"
-                                   footer:@"Plays reward-ad video faster, keeping the reward. "
-                                          @"“Include native video” also speeds in-game cutscenes if a game has them."]];
-        [specs addObject:[self switchSpecifierNamed:@"Fast-forward ads" key:@"SpeedUpVideo" default:YES]];
-        if (speedOn) {
-            [specs addObject:[self subSwitchNamed:@"Include native video" key:@"SpeedNativeVideo" default:YES]];
-        }
-
-        // Separate section for the aggressive countdown options (+ its clock sub-option).
-        if (speedOn) {
-            [specs addObject:[self groupNamed:@"Ad countdowns (playables)"
-                                       footer:@"For timer-gated playable ads. “Accelerate clock” also speeds "
-                                              @"wall-clock timers. Both can void the reward on video ads."]];
-            [specs addObject:[self switchSpecifierNamed:@"Rush ad countdowns" key:@"CompressTimers" default:NO]];
-            if (timersOn) {
-                [specs addObject:[self subSwitchNamed:@"Accelerate clock" key:@"AccelerateClock" default:NO]];
-            }
-        }
-
-        // Video speed multiplier (numeric text field).
-        [specs addObject:[self groupNamed:@"Speed"
-                                   footer:@"How many times faster (default 8). If a reward stops counting, "
-                                          @"lower it to 3–4 — high speeds can skip the ad's completion event."]];
-        PSSpecifier *rate = [PSSpecifier preferenceSpecifierNamed:@"Multiplier"
-                                                           target:self
-                                                              set:@selector(setPreferenceValue:specifier:)
-                                                              get:@selector(readPreferenceValue:)
-                                                           detail:nil
-                                                             cell:PSEditTextCell
-                                                             edit:nil];
-        [rate setProperty:kDomain forKey:@"defaults"];
-        [rate setProperty:kNotify forKey:@"PostNotification"];
-        [rate setProperty:@"VideoRate" forKey:@"key"];
-        [rate setProperty:@(8) forKey:@"default"];
-        [rate setProperty:@YES forKey:@"isNumeric"];
-        [rate setProperty:@(UIKeyboardTypeNumberPad) forKey:@"keyboardType"];
-        [specs addObject:rate];
-
-        // One switch per installed app.
-        [specs addObject:[self groupNamed:@"Apps" footer:nil]];
+        NSMutableArray *on = [NSMutableArray array], *off = [NSMutableArray array];
         for (NSDictionary *app in [self installedUserApps]) {
-            NSString *key = [@"enabled-" stringByAppendingString:app[@"id"]];
-            [specs addObject:[self switchSpecifierNamed:app[@"name"] key:key default:NO]];
+            [([self appEnabled:app[@"id"]] ? on : off) addObject:app];
         }
+
+        if (on.count) {
+            [specs addObject:[self groupNamed:@"Enabled" footer:nil]];
+            for (NSDictionary *app in on) [specs addObject:[self appLinkFor:app]];
+        }
+        [specs addObject:[self groupNamed:@"Not enabled" footer:nil]];
+        for (NSDictionary *app in off) [specs addObject:[self appLinkFor:app]];
+
+        [specs addObject:[self groupNamed:@"" footer:@"Resets every app's settings and disables all apps."]];
+        PSSpecifier *reset = [PSSpecifier preferenceSpecifierNamed:@"Reset all settings"
+                                                           target:self
+                                                              set:NULL
+                                                              get:NULL
+                                                           detail:NULL
+                                                             cell:PSButtonCell
+                                                             edit:NULL];
+        reset->action = @selector(resetSettings);
+        [reset setProperty:@YES forKey:@"enabled"];
+        [specs addObject:reset];
 
         _specifiers = [specs copy];
     }
     return _specifiers;
+}
+
+// Wipe the prefs plist (with confirmation), so every setting returns to its default.
+- (void)resetSettings {
+    UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Reset all settings?"
+                                                              message:@"This clears every app's settings and disables all apps."
+                                                       preferredStyle:UIAlertControllerStyleAlert];
+    [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [a addAction:[UIAlertAction actionWithTitle:@"Reset" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *act) {
+        [[NSFileManager defaultManager] removeItemAtPath:[ASPListBase prefsPathForDomain:@"com.34306.adspeed"] error:nil];
+        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                             CFSTR("com.34306.adspeed/reloadPrefs"), NULL, NULL, YES);
+        self->_specifiers = nil;
+        [self reloadSpecifiers];
+    }]];
+    [self presentViewController:a animated:YES completion:nil];
+}
+
+// Re-sort the Enabled / Not enabled sections after returning from a detail page.
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    _specifiers = nil;
+    [self reloadSpecifiers];
+}
+
+// Highlight enabled apps (green) in addition to the section split. Read the specifier
+// straight off the cell (PSTableCell exposes -specifier) to avoid relying on
+// -specifierAtIndexPath:, which isn't present on every Preferences version.
+- (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (![cell respondsToSelector:@selector(specifier)]) return;
+    PSSpecifier *spec = [(id)cell specifier];
+    NSString *bid = [spec propertyForKey:@"bid"];
+    if (bid) {
+        cell.textLabel.textColor = [self appEnabled:bid] ? [UIColor systemGreenColor] : [UIColor labelColor];
+    }
 }
 
 @end

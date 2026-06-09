@@ -15,6 +15,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Read version
+        id: ver
+        run: echo "version=$(grep '^Version:' control | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -76,16 +80,33 @@ jobs:
           fi
           echo "THEOS=$THEOS" >> "$GITHUB_ENV"
 
+      # Each variant is a separate build stage; all outputs collect into dist/ and ship
+      # as a single artifact archive.
       - name: Build rootless .deb
         run: |
+          rm -rf packages
           make clean || true
           make package FINALPACKAGE=1
+          mkdir -p dist && cp packages/*.deb dist/
 
-      - name: Upload artifact
+      - name: Build rootful .deb
+        run: |
+          rm -rf packages
+          make clean || true
+          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=
+          cp packages/*.deb dist/
+
+      - name: Build jailed dylib (TrollFools / Sideloadly)
+        run: |
+          make clean || true
+          make jailed FINALPACKAGE=1
+          cp packages/adspeed-jailed.dylib dist/
+
+      - name: Upload combined archive
         uses: actions/upload-artifact@v4
         with:
-          name: adspeed-rootless
-          path: packages/*.deb
+          name: adspeed-builds-${{ steps.ver.outputs.version }}
+          path: dist/
           if-no-files-found: error
 
   release:
@@ -103,5 +124,7 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/**/*.deb
+          files: |
+            dist/**/*.deb
+            dist/**/*.dylib
           fail_on_unmatched_files: true

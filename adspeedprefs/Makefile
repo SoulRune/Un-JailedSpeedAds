@@ -7,7 +7,7 @@ include $(THEOS)/makefiles/common.mk
 
 BUNDLE_NAME = adspeedprefs
 
-adspeedprefs_FILES = ASPRootListController.m
+adspeedprefs_FILES = ASPListBase.m ASPRootListController.m ASPAppListController.m
 adspeedprefs_INSTALL_PATH = /Library/PreferenceBundles
 adspeedprefs_FRAMEWORKS = UIKit
 adspeedprefs_PRIVATE_FRAMEWORKS = Preferences

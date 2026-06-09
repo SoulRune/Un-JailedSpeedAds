@@ -1,9 +1,9 @@
 Package: com.34306.adspeed
 Name: Ads Speed
-Depends: ellekit, preferenceloader
-Version: 2.2
-Architecture: iphoneos-arm64
+Depends: ellekit | mobilesubstrate, preferenceloader
+Version: 2.2.1
+Architecture: iphoneos-arm
 Description: Block ads and speed up reward-ad videos, with a per-app Settings panel.
-Maintainer: Little 34306
+Maintainer: Little 34306, SoulRune
 Author: 34306
 Section: Tweaks

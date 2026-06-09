@@ -123,9 +123,17 @@ cd JailedSpeedAds
 # rootless .deb (Dopamine, palera1n rootless, etc.) — iOS 15.0+
 make package
 
-# standalone dylib for static injection (TrollFools), always-on, ignores Settings:
-make package adspeed_CFLAGS+=-DADSPEED_FORCE_ON
+# rootful .deb (palera1n rootful, XinaA15, etc.) — same iOS versions
+make package THEOS_PACKAGE_SCHEME=
+
+# jailed build: web video speed-up only, for injecting into an .ipa (TrollFools).
+make jailed     # outputs packages/adspeed-jailed.dylib
 ```
+
+The jailed dylib needs a substrate provider bundled into the app at inject time:
+**TrollStore + TrollFools** (bundles it automatically), or **Sideloadly** with its
+**“Cydia Substrate”** option enabled. A sideload without a substrate option won't load
+the hooks.
 
 The finished package lands in `./packages/`.
 

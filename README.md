@@ -35,19 +35,38 @@ By default nothing happens until you enable an app in the list.
 Requires [Theos](https://theos.dev) (macOS, or Linux/WSL — see [BUILD.md](BUILD.md)).
 
 ```sh
-# rootless .deb (iOS 15.0+)
+# rootless .deb (Dopamine, palera1n rootless …), iOS 15.0+
 make package
+
+# rootful .deb (palera1n rootful, XinaA15 …), same iOS versions
+make package THEOS_PACKAGE_SCHEME=
 ```
 
-### Standalone injection (TrollFools / no Settings panel)
+Both share the same source; Theos sets the install paths, architecture and substrate
+linkage per scheme, and the Settings panel auto-detects the jailbreak root.
 
-Build with the always-on flag so it activates without a preferences file:
+### Jailed devices (inject into an .ipa)
+
+For non-jailbroken devices there is no package manager, Settings panel or prefs, so
+build the **jailed** variant: always-on, **web video speed-up only** (no native
+AVPlayer — it could also speed in-game cutscenes you couldn't turn off — no timer/clock
+tricks, no ad blocking).
 
 ```sh
-make package adspeed_CFLAGS+=-DADSPEED_FORCE_ON
+make jailed     # outputs packages/adspeed-jailed.dylib
 ```
 
-Then inject the resulting `adspeed.dylib` into the target `.ipa`.
+Inject `packages/adspeed-jailed.dylib` into the target `.ipa`. The hooks need a substrate
+provider bundled into the app, so use either:
+- **TrollStore + TrollFools** (bundles the substrate automatically), or
+- **Sideloadly** with its **“Cydia Substrate”** option enabled when injecting the dylib.
+
+A sideload *without* a substrate option has nothing to resolve the hooks against, so
+they won't load.
+
+> `-DADSPEED_FORCE_ON` is the other always-on flag: same "ignore prefs / always active"
+> behaviour but with the **full** feature set (blocking, native, etc.) at their defaults.
+> Use `ADSPEED_JAILED` for the safe speed-only build.
 
 ## Layout
 

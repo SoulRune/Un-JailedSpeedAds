@@ -1,0 +1,107 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ '*' ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    # 22.04 ships libtinfo5/libncurses5 that the Theos Linux toolchain needs.
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential fakeroot rsync perl curl ca-certificates \
+            zip unzip git dpkg-dev libtinfo5 libncurses5 llvm
+
+      - name: Cache Theos
+        id: cache-theos
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/theos
+          key: theos-${{ runner.os }}-v1
+
+      - name: Set up Theos
+        env:
+          THEOS: ${{ github.workspace }}/theos
+        run: |
+          # Manual setup — install-theos' toolchain download is unreliable on Linux
+          # (often fetches an HTML redirect instead of the .tar.xz).
+          if [ ! -x "$THEOS/bin/logos.pl" ]; then
+            git clone --quiet --recursive https://github.com/theos/theos.git "$THEOS"
+          fi
+          if [ ! -d "$THEOS/sdks/iPhoneOS16.5.sdk" ]; then
+            git clone --quiet --depth=1 https://github.com/theos/sdks.git "$THEOS/sdks"
+          fi
+          if [ ! -x "$THEOS/toolchain/linux/iphone/bin/clang" ]; then
+            mkdir -p "$THEOS/toolchain/linux/iphone"
+            # x86_64 / ubuntu22.04 build (matches the runner).
+            url=$(curl -fsSL https://api.github.com/repos/kabiroberai/swift-toolchain-linux/releases/latest \
+                  | grep browser_download_url | grep 'ubuntu22.04.tar.xz' | grep -v aarch64 \
+                  | head -n1 | cut -d'"' -f4)
+            echo "Toolchain: $url"
+            curl -L --fail --retry 5 --retry-delay 3 "$url" -o /tmp/toolchain.tar.xz
+            file /tmp/toolchain.tar.xz | grep -q 'XZ compressed' \
+              || { echo "Toolchain download is not an xz archive"; exit 1; }
+            tar -xf /tmp/toolchain.tar.xz -C "$THEOS/toolchain/linux/iphone" --strip-components=1
+            # Archive nests host/ and iphone/: expose the host compiler flat.
+            TC="$THEOS/toolchain/linux/iphone"
+            [ -d "$TC/host/bin" ] && ln -sfn host/bin "$TC/bin" && ln -sfn host/lib "$TC/lib"
+            # clang calls the linker as "ld"; lld picks ELF vs Mach-O from argv[0], so a
+            # symlink would run in ELF mode. Wrap it to re-invoke lld as ld64.lld.
+            rm -f "$TC/host/bin/ld"
+            printf '#!/bin/sh\nexec "$(dirname "$0")/ld64.lld" "$@"\n' > "$TC/host/bin/ld"
+            chmod +x "$TC/host/bin/ld"
+            # Theos calls cctools names; this toolchain lacks them, so alias to system LLVM.
+            LLVMDIR=$(ls -d /usr/lib/llvm-*/bin 2>/dev/null | sort -V | tail -1)
+            for pair in strip:llvm-strip lipo:llvm-lipo install_name_tool:llvm-install-name-tool \
+                        nm:llvm-nm otool:llvm-otool objcopy:llvm-objcopy ranlib:llvm-ranlib dsymutil:dsymutil; do
+              name=${pair%%:*}; src=${pair##*:}
+              [ -x "$LLVMDIR/$src" ] && ln -sfn "$LLVMDIR/$src" "$TC/host/bin/$name"
+            done
+          fi
+          # ldid for fake-signing
+          if [ ! -x "$THEOS/bin/ldid" ]; then
+            url=$(curl -fsSL https://api.github.com/repos/ProcursusTeam/ldid/releases/latest \
+                  | grep browser_download_url | grep 'ldid_linux_x86_64"' | head -n1 | cut -d'"' -f4)
+            curl -L --fail --retry 5 "$url" -o "$THEOS/bin/ldid" && chmod +x "$THEOS/bin/ldid"
+          fi
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+
+      - name: Build rootless .deb
+        run: |
+          make clean || true
+          make package FINALPACKAGE=1
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: adspeed-rootless
+          path: packages/*.deb
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*.deb
+          fail_on_unmatched_files: true

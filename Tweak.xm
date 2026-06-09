@@ -1,198 +1,602 @@
-#include <iostream>
-#include <string>
+// Ads Speed - rewritten 2.1
+//
+// Two ways to ship this:
+//   1) As a .deb  -> injected into every UIKit app via the filter (adspeed.plist),
+//                    then gated at runtime per-app from the Settings panel.
+//   2) Statically injected into a single .ipa (e.g. TrollFools). For that build,
+//      compile with -DADSPEED_FORCE_ON so it is always active and ignores prefs.
+//
+// How "ads" are detected:
+//   There is no content analysis. Display ads are neutralised by name: known ad-SDK
+//   classes (GAD* AdMob, MA*/AL* AppLovin, IS* ironSource, FBAd* Meta, IMAAd Google
+//   IMA, Vungle*, SCSnapAds* Snap ...) have their load/render/isReady methods stubbed
+//   so the host app believes no ad is available. Video ads are sped up ONLY while a
+//   known ad view-controller is on screen (see gAdDepth) - normal app video is left
+//   alone.
+
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import <substrate.h>
+#import <mach-o/dyld.h>
+#import <WebKit/WebKit.h>
 
-//No func
-static BOOL returnNo(id self, SEL _cmd) {
-    return NO;
+#pragma mark - Preferences
+
+static NSString *const kKeyMaster     = @"Enabled";        // master on/off, default YES
+static NSString *const kKeyBlockAds   = @"BlockAds";       // SDK ad blocking, default YES
+static NSString *const kKeySpeedVideo = @"SpeedUpVideo";   // speed up ad video, default YES
+static NSString *const kKeyVideoRate  = @"VideoRate";      // playback multiplier, default 8.0
+static NSString *const kKeyWebTimers  = @"CompressTimers"; // compress JS setTimeout/setInterval, default NO
+static NSString *const kKeyWebClock   = @"AccelerateClock"; // also run Date.now/performance.now fast, default NO
+static NSString *const kKeySpeedNative= @"SpeedNativeVideo";// speed every AVPlayer, not just detected ad VCs, default YES
+static NSString *const kKeyBypassJB   = @"BypassJailbreak";// jailbreak-detect bypass, default YES
+static NSString *const kKeyAppPrefix  = @"enabled-";       // per-app key: enabled-<bundleID>
+
+// Runtime state, resolved once at launch.
+static BOOL  gActive      = NO;
+static BOOL  gSpeedVideo  = YES;
+static BOOL  gWebTimers   = NO;
+static BOOL  gWebClock    = NO;
+static BOOL  gSpeedNative  = YES;
+static float gVideoRate  = 8.0f;
+static int   gAdDepth    = 0;     // >0 while a known ad view-controller is visible
+
+static NSDictionary *loadPrefs(void) {
+    // The Settings panel writes via CFPreferences for the mobile user; read the plist
+    // directly so it works regardless of sandbox/CFPreferences quirks. Try rootless
+    // first, then rootful.
+    NSArray *paths = @[
+        @"/var/jb/var/mobile/Library/Preferences/com.34306.adspeed.plist",
+        @"/var/mobile/Library/Preferences/com.34306.adspeed.plist",
+    ];
+    for (NSString *p in paths) {
+        NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:p];
+        if (d) return d;
+    }
+    return nil;
 }
 
-//Find almost function that contains ads in almost games apps
-void hookMethods() {
-    MSHookMessageEx(objc_getClass("GADAdSource"), @selector(invalidated), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ALMediationServiceAdDelegateProxy"), @selector(didLoadAd:withExtraInfo:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("AdsHandler"), @selector(pauseAll:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("AdsHandler"), @selector(clear), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("AdsHandler"), @selector(setPossibleAdsPerHour:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("AdsHandler"), @selector(init), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("AdsHandler"), @selector(clearTimeSinceLiveStarted), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("AdsHandler"), @selector(updateTimeSinceLiveStarted), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("BasePlayerView"), @selector(OnPlayer_AdStarted:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("FullScreenViewTVAIS"), @selector(getLastPlayedChannel), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("FullScreenViewTVAIS"), @selector(startPlayChannel:forceStart:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RFQVideoPlayer"), @selector(checkIsPreviewEnded), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RFQVideoPlayerAd"), @selector(onAdStartedPlay), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RFQVideoPlayerAd"), @selector(adShouldStartPlay), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RFQVideoPlayerAd"), @selector(setAdShouldStartPlay:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RSVodHead"), @selector(isPreview), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RSVodHead"), @selector(isPreviewEnded), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RSVodHead"), @selector(setIsPreview:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RSVodHead"), @selector(setIsPreviewEnded:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("TAGPreviewManager"), @selector(isPreviewingContainer:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("TabBarBaseVC"), @selector(OnHeadLoadSuccess), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("UMPConsentInformation"), @selector(canRequestAds), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("XmppVCardInfo"), @selector(hasAnyAds), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("XmppVCardInfo"), @selector(hasNativeAds), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("XmppVCardInfo"), @selector(hasRegularAds), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("SCSnapAdsAdResponsePersistentCache"), @selector(_getAdResponse:removeAdResponseOnHit:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("SCSnapAdsAdSourceConfig"), @selector(shouldDisableServeRequest), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("SCSnapAdsAdSourceConfig"), @selector(protoServeEndpoint), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("SCSnapAdsAdSourceConfig"), @selector(protoInitEndpoint), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("SCSnapAdsDynamicAdMediaManagerImpl"), @selector(removeMediaDataSource:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("SCSnapAdsOnDeviceInfoRecordCoordinator"), @selector(_handleRemoveOnDeviceInfoRecordsWithSuccess:completionBlock:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("SCSnapAdsOnDeviceInfoRecordCoordinator"), @selector(removeAllOnDeviceInfoRecordsForSaid:completionQueue:completionBlock:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("SCSnapAdsServeResponseDataStore"), @selector(_removeAdResponseForIdentifier:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("SCSnapAdsServeResponseDataStore"), @selector(removeAdResponseForIdentifier:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("NSNetService"), @selector(publish), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("NSNetService"), @selector(stop), (IMP)returnNo, NULL);
-    //MSHookMessageEx(objc_getClass("NSNetService"), @selector(dealloc), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("NSNetService"), @selector(addresses), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("NSNetService"), @selector(initWithCFNetService:), (IMP)returnNo, NULL);
-    //MSHookMessageEx(objc_getClass("NSNetServiceBrowser"), @selector(dealloc), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("NSNetServiceBrowser"), @selector(stop), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("NSURLConnectionInternalConnection"), @selector(cancelAuthenticationChallenge:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("NSURLConnectionInternalConnection"), @selector(_timingData), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("NSURLSessionTaskHTTPAuthenticator"), @selector(sessionTaskHTTPAuthenticatorWithContext:statusCodes:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("NSURLSessionTaskHTTPAuthenticator"), @selector(setStatusCodes:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("NSURLSessionTaskLocalHTTPAuthenticator"), @selector(externalAuthenticator), (IMP)returnNo, NULL);
-    //MSHookMessageEx(objc_getClass("NWStreamPair"), @selector(dealloc), (IMP)returnNo, NULL);
-    //MSHookMessageEx(objc_getClass("__NSCFURLLocalStreamTaskFromDataTaskDataBlobby"), @selector(dealloc), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("__NSCFURLSessionTaskGroup"), @selector(dataTaskWithRequest:completionHandler:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("__NSCFURLSessionTaskGroup"), @selector(forwardingTargetForSelector:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("__NSCFURLSessionTaskGroup"), @selector(dataTaskWithRequest:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("__NSCFURLSessionTaskGroup"), @selector(uploadTaskWithStreamedRequest:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("__NSCFURLSessionTaskGroup"), @selector(_groupConfiguration), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("__NSCFURLSessionTaskGroup"), @selector(_groupSession), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("NSURLConnectionInternal"), @selector(useCredential:forAuthenticationChallenge:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("NSURLConnectionInternal"), @selector(_timingData), (IMP)returnNo, NULL);
-    //MSHookMessageEx(objc_getClass("NSURLSessionTaskBackgroundHTTPAuthenticator"), @selector(dealloc), (IMP)returnNo, NULL);
-    //MSHookMessageEx(objc_getClass("NSURLSessionTaskDependency"), @selector(dealloc), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("__NSCFURLSessionXPC"), @selector(initialize), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("FPUserCredentials"), @selector(adremoval_enabled), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ALIncentivizedInterstitialAd"), @selector(isReadyForDisplay), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ALMediatedAd"), @selector(isReady), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ALStoreKitProductViewController"), @selector(isReady), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ALStoreProductViewControllerWrapper"), @selector(isReady), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("FBAdDSLBridgeViewController"), @selector(isReadyToPresent), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("IMAAd"), @selector(isSkippable), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("IMAAd"), @selector(isUiDisabled), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ISAdMobBannerAdapter"), @selector(isLargeScreen), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ISBaseAdUnitInteractionSmash"), @selector(isReadyToShow), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ISBaseAdUnitManager"), @selector(isReadyToShow), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ISBaseAdUnitSmash"), @selector(isReadyToShow), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ISDemandOnlyIsSmash"), @selector(isReadyToShow), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ISDemandOnlyRvSmash"), @selector(isReadyToShow), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ISLWSProgRvSmash"), @selector(isReadyToShow), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ISProgIsSmash"), @selector(isReadyToShow), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("MAAd"), @selector(isReady), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("MAAppOpenAd"), @selector(isReady), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("MAFullscreenAdController"), @selector(isReady), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("MAInterstitialAd"), @selector(isReady), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("MARewardedAd"), @selector(isReady), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("MARewardedInterstitialAd"), @selector(isReady), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADView"), @selector(initWithFrame:context:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ALDCreativeDebuggerTableViewDataSource"), @selector(initializeWithDisplayedAds:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ALMediationAdLoadCoordinator"), @selector(didLoadAd:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ALMediationSetting"), @selector(fullscreenAdShouldReturnReadyWhenAdLoadIsInProgress), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADBannerAd"), @selector(adView), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADBannerAd"), @selector(videoController), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADCustomEventBannerAdRenderer"), @selector(renderWithServerTransaction:adConfiguration:completionHandler:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADFullScreenAdViewController"), @selector(viewWillAppear:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADFullScreenAdViewController"), @selector(presented), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADFullScreenAdViewController"), @selector(canPresentFromViewController:error:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADInlineInterstitialAdRenderer"), @selector(renderWithServerTransaction:adConfiguration:completionHandler:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADInlineMultipleNativeAdsRenderer"), @selector(renderWithServerTransaction:adConfiguration:completionHandler:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADInlineMultipleNativeAdsRenderer"), @selector(init), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADMediationBannerAdRenderer"), @selector(renderWithServerTransaction:adConfiguration:completionHandler:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADMediationBannerAdRenderer"), @selector(adapter:didReceiveAdView:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADRTBMediationBannerAdRenderer"), @selector(renderWithServerTransaction:adConfiguration:completionHandler:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADUnifiedMediationBannerAdRenderer"), @selector(renderWithServerTransaction:adConfiguration:completionHandler:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("MANativeAdSource"), @selector(isAdLoading), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADInlineBannerAdRenderer"), @selector(renderWithServerTransaction:adConfiguration:completionHandler:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RNGoogleMobileAdsBannerComponent"), @selector(didSetProps:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RNGoogleMobileAdsBannerComponent"), @selector(banner), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RNGoogleMobileAdsBannerComponent"), @selector(requested), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RNGoogleMobileAdsBannerComponent"), @selector(setBanner:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RNGoogleMobileAdsBannerComponent"), @selector(request), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RNGoogleMobileAdsBannerComponent"), @selector(propsChanged), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RNGoogleMobileAdsBannerComponent"), @selector(onNativeEvent), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RNGoogleMobileAdsBannerComponent"), @selector(setPropsChanged:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RNGoogleMobileAdsBannerViewManager"), @selector(view), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RNGoogleMobileAdsBannerViewManager"), @selector(methodQueue), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RNGoogleMobileAdsBannerViewManager"), @selector(propConfig_unitId), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RNGoogleMobileAdsBannerViewManager"), @selector(propConfig_sizes), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RNGoogleMobileAdsBannerViewManager"), @selector(propConfig_onNativeEvent), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RNGoogleMobileAdsBannerViewManager"), @selector(propConfig_manualImpressionsEnabled), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RNGoogleMobileAdsBannerViewManager"), @selector(recordManualImpression:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RNGoogleMobileAdsBannerViewManager"), @selector(bridge), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("RNGoogleMobileAdsBannerViewManager"), @selector(propConfig_request), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("VungleURLConfiguration"), @selector(setAdsURL:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADAdRenderResult"), @selector(rendererClassString), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADAdRenderResult"), @selector(setRendererClassString:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADInlineSingleNativeAdRenderer"), @selector(init), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADInternalBannerView"), @selector(callBackAdViewDidReceiveAd), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADMediatedAdRenderer"), @selector(adapter:didReceiveAdView:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADBannerView"), @selector(bannerViewDidReceiveAd:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADBannerView"), @selector(bannerView:didFailToReceiveAdWithError:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADBannerView"), @selector(bannerViewDidRecordImpression:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADBannerView"), @selector(bannerViewWillPresentScreen:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADBannerView"), @selector(adViewIntrinsicContentSizeDidChange:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADBannerView"), @selector(setAutoloadEnabled:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADBannerView"), @selector(setAdUnitID:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADBannerView"), @selector(loadRequest:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("_TtC9BusTaiwan20YBGoogleBannerAdView"), @selector(loadAd), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ALAdLoadState"), @selector(isWaitingForAd), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ALAdLoadState"), @selector(setIsWaitingForAd:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ALAdService"), @selector(hasPreloadedAdOfSize:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ALAdService"), @selector(hasPreloadedAdForZoneIdentifier:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ALFullScreenAdTracker"), @selector(isFullScreenAdShowing), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ALMediationAdLoadState"), @selector(isWaitingForAd), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ALMediationAdLoadState"), @selector(setIsWaitingForAd:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ALMediationAdapterRouter"), @selector(isAdShowingForAdapter:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("ALNativeAdService"), @selector(loadNextAdAndNotify:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("APMPersistedConfig"), @selector(allowPersonalizedAds), (IMP)returnNo, NULL);
-    
-    MSHookMessageEx(objc_getClass("NSNetService"), sel_getUid("dealloc"), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("NSNetServiceBrowser"), sel_getUid("dealloc"), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("NWStreamPair"), sel_getUid("dealloc"), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("__NSCFURLLocalStreamTaskFromDataTaskDataBlobby"), sel_getUid("dealloc"), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("NSURLSessionTaskBackgroundHTTPAuthenticator"), sel_getUid("dealloc"), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("NSURLSessionTaskDependency"), sel_getUid("dealloc"), (IMP)returnNo, NULL);
-
-    //also return no for jb detect
-    MSHookMessageEx(objc_getClass("BUDeviceHelper"), @selector(bu_isJailBroken), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("EBAppLogDeviceHelper"), @selector(isJailBroken), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADMinimumVersionSupport"), @selector(OSIsSupported), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADOMIDAdSessionRegistry"), @selector(isActive), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADOMIDAdSessionRegistry"), @selector(removeAdSession:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADOMIDAdSessionRegistry"), @selector(adSessions), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADOMIDAdSessionRegistry"), @selector(activeAdSessions), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("GADOMIDAdSessionRegistry"), @selector(addAdSession:), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("HMDBUInfo"), @selector(isJailBroken), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("MobClick"), @selector(isJailbroken), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("MobClick"), @selector(isPirated), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("SSEDeviceStatus"), @selector(jailBroken), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("UMUtils"), @selector(isDeviceJailBreak), (IMP)returnNo, NULL);
-    MSHookMessageEx(objc_getClass("UMUtils"), @selector(isAppPirate), (IMP)returnNo, NULL);
+static BOOL prefBool(NSDictionary *p, NSString *key, BOOL fallback) {
+    id v = p[key];
+    return v ? [v boolValue] : fallback;
 }
 
-// Initialize the tweak
-__attribute__((constructor))
-static void initialize() {
-    hookMethods();
+#pragma mark - Debug (build with -DADSPEED_DEBUG)
+
+#ifdef ADSPEED_DEBUG
+// Logs to the system log AND to <app sandbox>/tmp/adspeed.log (always writable,
+// retrieve it over SSH with:
+//   find /var/mobile/Containers/Data/Application -name adspeed.log)
+static void aspLog(NSString *fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:ap];
+    va_end(ap);
+    NSLog(@"[AdSpeed] %@", msg);
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"adspeed.log"];
+    NSString *line = [msg stringByAppendingString:@"\n"];
+    // Truncate once per process launch, then append within the launch, so each file
+    // only holds the most recent run instead of accumulating across respawns.
+    static BOOL truncated = NO;
+    FILE *f = fopen(path.UTF8String, truncated ? "a" : "w");
+    truncated = YES;
+    if (f) { fputs(line.UTF8String, f); fclose(f); }
 }
 
-//skip ads if it was a video player
-%hook AVPlayer
+#endif // ADSPEED_DEBUG
 
-- (void)setRate:(float)rate {
- %orig(rate * 600.0f);
+// Class dump is opt-in (build with -DADSPEED_DUMP -DADSPEED_DEBUG): calling
+// objc_copyClassList crashes some apps (e.g. Idle Sword Master), so keep it out of
+// the normal debug build.
+#ifdef ADSPEED_DUMP
+static void aspDumpAdClasses(void) {
+    // Specific tokens only — loose ones (MAX, ISA, MTG, Interstitial) match tons of
+    // system classes (MAXpcManager, UISApplicationState, MPS...MTGP32, AVPlayerInterstitial).
+    NSArray *kw = @[@"AppLovin", @"ALSdk", @"MAInterstitial", @"MARewarded", @"MANative", @"MAAppOpen",
+                    @"IronSource", @"LevelPlay", @"ISInterstitial", @"ISRewardedVideo", @"ISBannerAd",
+                    @"Mintegral", @"MTGInterstitial", @"MTGReward", @"MTGBid", @"MTGBanner", @"MTGNative",
+                    @"InMobi", @"IMInterstitial", @"IMBanner", @"IMNative", @"IMRewarded",
+                    @"UnityAds", @"UADSBanner",
+                    @"GADInterstitial", @"GADRewarded", @"GADAppOpen", @"GADNativeAd",
+                    @"Vungle", @"AdColony", @"Chartboost", @"PAGInterstitial", @"BUNativeAd",
+                    @"Fyber", @"Tapjoy"];
+    unsigned int n = 0;
+    Class *cls = objc_copyClassList(&n);
+    int hits = 0;
+    for (unsigned i = 0; i < n; i++) {
+        NSString *name = @(class_getName(cls[i]));
+        for (NSString *k in kw) {
+            if ([name containsString:k]) { aspLog(@"  class: %@", name); hits++; break; }
+        }
+    }
+    free(cls);
+    aspLog(@"ad-like classes found: %d", hits);
+}
+#endif
+
+#pragma mark - Typed stubs
+
+// NO / nil / 0 are bit-identical in x0 on arm64, but naming the intent keeps the
+// hook table readable and avoids surprises if this is ever ported.
+static BOOL returnFalse(__unused id self, __unused SEL _cmd) { return NO; }
+static id   returnNil  (__unused id self, __unused SEL _cmd) { return nil; }
+static void returnVoid (__unused id self, __unused SEL _cmd) { }
+
+typedef enum { StubBOOL, StubNil, StubVoid } StubType;
+typedef struct { const char *cls; const char *sel; StubType type; } AdHook;
+
+static IMP stubFor(StubType t) {
+    return (t == StubNil)  ? (IMP)returnNil
+         : (t == StubVoid) ? (IMP)returnVoid
+                           : (IMP)returnFalse;
 }
 
-- (float)rate{
- return %orig() * 0.5f;
+static void installHook(const AdHook *h) {
+    Class c = objc_getClass(h->cls);
+    if (!c) return;
+    SEL s = sel_registerName(h->sel);
+    // Only retarget a method the class actually implements - never add new methods,
+    // which would alter -respondsToSelector: behaviour.
+    if (!class_getInstanceMethod(c, s)) return;
+    MSHookMessageEx(c, s, stubFor(h->type), NULL);
 }
 
+// Same, but for class methods (e.g. +[IronSource hasRewardedVideo]): hook the metaclass.
+static void installClassHook(const AdHook *h) {
+    Class c = objc_getClass(h->cls);
+    if (!c) return;
+    SEL s = sel_registerName(h->sel);
+    if (!class_getClassMethod(c, s)) return;
+    MSHookMessageEx(object_getClass(c), s, stubFor(h->type), NULL);
+}
+
+static void installAll(const AdHook *table, size_t n) {
+    for (size_t i = 0; i < n; i++) installHook(&table[i]);
+}
+
+static void installAllClass(const AdHook *table, size_t n) {
+    for (size_t i = 0; i < n; i++) installClassHook(&table[i]);
+}
+
+#pragma mark - Ad-SDK blocking table
+
+static const AdHook kAdHooks[] = {
+    // Generic / app-specific ad managers
+    {"GADAdSource", "invalidated", StubBOOL},
+    {"ALMediationServiceAdDelegateProxy", "didLoadAd:withExtraInfo:", StubVoid},
+    {"AdsHandler", "pauseAll:", StubVoid},
+    {"AdsHandler", "clear", StubVoid},
+    {"AdsHandler", "setPossibleAdsPerHour:", StubVoid},
+    {"AdsHandler", "init", StubNil},
+    {"AdsHandler", "clearTimeSinceLiveStarted", StubVoid},
+    {"AdsHandler", "updateTimeSinceLiveStarted", StubVoid},
+    {"BasePlayerView", "OnPlayer_AdStarted:", StubVoid},
+    {"FullScreenViewTVAIS", "getLastPlayedChannel", StubNil},
+    {"FullScreenViewTVAIS", "startPlayChannel:forceStart:", StubVoid},
+    {"RFQVideoPlayer", "checkIsPreviewEnded", StubBOOL},
+    {"RFQVideoPlayerAd", "onAdStartedPlay", StubVoid},
+    {"RFQVideoPlayerAd", "adShouldStartPlay", StubBOOL},
+    {"RFQVideoPlayerAd", "setAdShouldStartPlay:", StubVoid},
+    {"RSVodHead", "isPreview", StubBOOL},
+    {"RSVodHead", "isPreviewEnded", StubBOOL},
+    {"RSVodHead", "setIsPreview:", StubVoid},
+    {"RSVodHead", "setIsPreviewEnded:", StubVoid},
+    {"TAGPreviewManager", "isPreviewingContainer:", StubBOOL},
+    {"TabBarBaseVC", "OnHeadLoadSuccess", StubVoid},
+    {"UMPConsentInformation", "canRequestAds", StubBOOL},
+    {"XmppVCardInfo", "hasAnyAds", StubBOOL},
+    {"XmppVCardInfo", "hasNativeAds", StubBOOL},
+    {"XmppVCardInfo", "hasRegularAds", StubBOOL},
+
+    // Snap ad cache / serve
+    {"SCSnapAdsAdResponsePersistentCache", "_getAdResponse:removeAdResponseOnHit:", StubNil},
+    {"SCSnapAdsAdSourceConfig", "shouldDisableServeRequest", StubBOOL},
+    {"SCSnapAdsAdSourceConfig", "protoServeEndpoint", StubNil},
+    {"SCSnapAdsAdSourceConfig", "protoInitEndpoint", StubNil},
+    {"SCSnapAdsDynamicAdMediaManagerImpl", "removeMediaDataSource:", StubVoid},
+    {"SCSnapAdsOnDeviceInfoRecordCoordinator", "_handleRemoveOnDeviceInfoRecordsWithSuccess:completionBlock:", StubVoid},
+    {"SCSnapAdsOnDeviceInfoRecordCoordinator", "removeAllOnDeviceInfoRecordsForSaid:completionQueue:completionBlock:", StubVoid},
+    {"SCSnapAdsServeResponseDataStore", "_removeAdResponseForIdentifier:", StubVoid},
+    {"SCSnapAdsServeResponseDataStore", "removeAdResponseForIdentifier:", StubVoid},
+
+    // Vungle
+    {"VungleURLConfiguration", "setAdsURL:", StubVoid},
+
+    // Mintegral (MTG*) — selectors verified against the AppLovin↔Mintegral adapter.
+    // Old interstitial-video + rewarded managers (this is what Tycoon Empire uses):
+    {"MTGInterstitialVideoAdManager", "isVideoReadyToPlayWithPlacementId:unitId:", StubBOOL},
+    {"MTGBidInterstitialVideoAdManager", "isVideoReadyToPlayWithPlacementId:unitId:", StubBOOL},
+    {"MTGRewardAdManager", "isVideoReadyToPlayWithPlacementId:unitId:", StubBOOL},
+    {"MTGBidRewardAdManager", "isVideoReadyToPlayWithPlacementId:unitId:", StubBOOL},
+    // New interstitial managers use -isAdReady:
+    {"MTGNewInterstitialAdManager", "isAdReady", StubBOOL},
+    {"MTGNewInterstitialBidAdManager", "isAdReady", StubBOOL},
+    // Splash / app-open:
+    {"MTGSplashAD", "isBiddingADReadyToShow", StubBOOL},
+
+    // Misc
+    {"FPUserCredentials", "adremoval_enabled", StubBOOL},
+
+    // AppLovin (AL* / MA*)
+    {"ALIncentivizedInterstitialAd", "isReadyForDisplay", StubBOOL},
+    {"ALMediatedAd", "isReady", StubBOOL},
+    {"ALStoreKitProductViewController", "isReady", StubBOOL},
+    {"ALStoreProductViewControllerWrapper", "isReady", StubBOOL},
+    {"ALDCreativeDebuggerTableViewDataSource", "initializeWithDisplayedAds:", StubVoid},
+    {"ALMediationAdLoadCoordinator", "didLoadAd:", StubVoid},
+    {"ALMediationSetting", "fullscreenAdShouldReturnReadyWhenAdLoadIsInProgress", StubBOOL},
+    {"ALAdLoadState", "isWaitingForAd", StubBOOL},
+    {"ALAdLoadState", "setIsWaitingForAd:", StubVoid},
+    {"ALAdService", "hasPreloadedAdOfSize:", StubBOOL},
+    {"ALAdService", "hasPreloadedAdForZoneIdentifier:", StubBOOL},
+    {"ALFullScreenAdTracker", "isFullScreenAdShowing", StubBOOL},
+    {"ALMediationAdLoadState", "isWaitingForAd", StubBOOL},
+    {"ALMediationAdLoadState", "setIsWaitingForAd:", StubVoid},
+    {"ALMediationAdapterRouter", "isAdShowingForAdapter:", StubBOOL},
+    {"ALNativeAdService", "loadNextAdAndNotify:", StubVoid},
+    {"MAAd", "isReady", StubBOOL},
+    {"MAAppOpenAd", "isReady", StubBOOL},
+    {"MAFullscreenAdController", "isReady", StubBOOL},
+    {"MAInterstitialAd", "isReady", StubBOOL},
+    {"MARewardedAd", "isReady", StubBOOL},
+    {"MARewardedInterstitialAd", "isReady", StubBOOL},
+    {"MANativeAdSource", "isAdLoading", StubBOOL},
+
+    // Meta Audience Network
+    {"FBAdDSLBridgeViewController", "isReadyToPresent", StubBOOL},
+
+    // Google IMA
+    {"IMAAd", "isSkippable", StubBOOL},
+    {"IMAAd", "isUiDisabled", StubBOOL},
+
+    // ironSource (IS*)
+    {"ISAdMobBannerAdapter", "isLargeScreen", StubBOOL},
+    {"ISBaseAdUnitInteractionSmash", "isReadyToShow", StubBOOL},
+    {"ISBaseAdUnitManager", "isReadyToShow", StubBOOL},
+    {"ISBaseAdUnitSmash", "isReadyToShow", StubBOOL},
+    {"ISDemandOnlyIsSmash", "isReadyToShow", StubBOOL},
+    {"ISDemandOnlyRvSmash", "isReadyToShow", StubBOOL},
+    {"ISLWSProgRvSmash", "isReadyToShow", StubBOOL},
+    {"ISProgIsSmash", "isReadyToShow", StubBOOL},
+
+    // Google AdMob (GAD*)
+    {"GADView", "initWithFrame:context:", StubNil},
+    {"GADBannerAd", "adView", StubNil},
+    {"GADBannerAd", "videoController", StubNil},
+    {"GADCustomEventBannerAdRenderer", "renderWithServerTransaction:adConfiguration:completionHandler:", StubVoid},
+    {"GADFullScreenAdViewController", "viewWillAppear:", StubVoid},
+    {"GADFullScreenAdViewController", "presented", StubBOOL},
+    {"GADFullScreenAdViewController", "canPresentFromViewController:error:", StubBOOL},
+    {"GADInlineInterstitialAdRenderer", "renderWithServerTransaction:adConfiguration:completionHandler:", StubVoid},
+    {"GADInlineMultipleNativeAdsRenderer", "renderWithServerTransaction:adConfiguration:completionHandler:", StubVoid},
+    {"GADInlineMultipleNativeAdsRenderer", "init", StubNil},
+    {"GADMediationBannerAdRenderer", "renderWithServerTransaction:adConfiguration:completionHandler:", StubVoid},
+    {"GADMediationBannerAdRenderer", "adapter:didReceiveAdView:", StubVoid},
+    {"GADRTBMediationBannerAdRenderer", "renderWithServerTransaction:adConfiguration:completionHandler:", StubVoid},
+    {"GADUnifiedMediationBannerAdRenderer", "renderWithServerTransaction:adConfiguration:completionHandler:", StubVoid},
+    {"GADInlineBannerAdRenderer", "renderWithServerTransaction:adConfiguration:completionHandler:", StubVoid},
+    {"GADAdRenderResult", "rendererClassString", StubNil},
+    {"GADAdRenderResult", "setRendererClassString:", StubVoid},
+    {"GADInlineSingleNativeAdRenderer", "init", StubNil},
+    {"GADInternalBannerView", "callBackAdViewDidReceiveAd", StubVoid},
+    {"GADMediatedAdRenderer", "adapter:didReceiveAdView:", StubVoid},
+    {"GADBannerView", "bannerViewDidReceiveAd:", StubVoid},
+    {"GADBannerView", "bannerView:didFailToReceiveAdWithError:", StubVoid},
+    {"GADBannerView", "bannerViewDidRecordImpression:", StubVoid},
+    {"GADBannerView", "bannerViewWillPresentScreen:", StubVoid},
+    {"GADBannerView", "adViewIntrinsicContentSizeDidChange:", StubVoid},
+    {"GADBannerView", "setAutoloadEnabled:", StubVoid},
+    {"GADBannerView", "setAdUnitID:", StubVoid},
+    {"GADBannerView", "loadRequest:", StubVoid},
+
+    // OMID (Open Measurement) ad sessions
+    {"GADOMIDAdSessionRegistry", "isActive", StubBOOL},
+    {"GADOMIDAdSessionRegistry", "removeAdSession:", StubVoid},
+    {"GADOMIDAdSessionRegistry", "adSessions", StubNil},
+    {"GADOMIDAdSessionRegistry", "activeAdSessions", StubNil},
+    {"GADOMIDAdSessionRegistry", "addAdSession:", StubVoid},
+    {"GADMinimumVersionSupport", "OSIsSupported", StubBOOL},
+
+    // React Native Google Mobile Ads
+    {"RNGoogleMobileAdsBannerComponent", "didSetProps:", StubVoid},
+    {"RNGoogleMobileAdsBannerComponent", "banner", StubNil},
+    {"RNGoogleMobileAdsBannerComponent", "requested", StubBOOL},
+    {"RNGoogleMobileAdsBannerComponent", "setBanner:", StubVoid},
+    {"RNGoogleMobileAdsBannerComponent", "request", StubVoid},
+    {"RNGoogleMobileAdsBannerComponent", "propsChanged", StubBOOL},
+    {"RNGoogleMobileAdsBannerComponent", "onNativeEvent", StubVoid},
+    {"RNGoogleMobileAdsBannerComponent", "setPropsChanged:", StubVoid},
+    {"RNGoogleMobileAdsBannerViewManager", "view", StubNil},
+    {"RNGoogleMobileAdsBannerViewManager", "methodQueue", StubNil},
+    {"RNGoogleMobileAdsBannerViewManager", "propConfig_unitId", StubNil},
+    {"RNGoogleMobileAdsBannerViewManager", "propConfig_sizes", StubNil},
+    {"RNGoogleMobileAdsBannerViewManager", "propConfig_onNativeEvent", StubNil},
+    {"RNGoogleMobileAdsBannerViewManager", "propConfig_manualImpressionsEnabled", StubNil},
+    {"RNGoogleMobileAdsBannerViewManager", "recordManualImpression:", StubVoid},
+    {"RNGoogleMobileAdsBannerViewManager", "bridge", StubNil},
+    {"RNGoogleMobileAdsBannerViewManager", "propConfig_request", StubNil},
+
+    // App-specific banner
+    {"_TtC9BusTaiwan20YBGoogleBannerAdView", "loadAd", StubVoid},
+
+    // Personalised ads config
+    {"APMPersistedConfig", "allowPersonalizedAds", StubBOOL},
+
+    // ===================================================================
+    // Current ad SDKs (2024-2026). Each entry neutralises a "ready / valid /
+    // cached / can-present" check so the host app believes no ad is available.
+    // Names are from public SDK APIs; versions vary, so misses are silent no-ops.
+    // Swift-only SDKs (Unity Ads, new InMobiSDK.*, new GoogleMobileAds Swift)
+    // can't be reached this way — see the web speed-up path for those.
+    // ===================================================================
+
+    // Meta Audience Network (FAN)
+    {"FBInterstitialAd", "isAdValid", StubBOOL},
+    {"FBRewardedVideoAd", "isAdValid", StubBOOL},
+    {"FBRewardedInterstitialAd", "isAdValid", StubBOOL},
+    {"FBNativeAd", "isAdValid", StubBOOL},
+
+    // Google AdMob / Google Mobile Ads (ObjC GAD*) — block full-screen presentation
+    {"GADInterstitialAd", "canPresentFromRootViewController:error:", StubBOOL},
+    {"GADRewardedAd", "canPresentFromRootViewController:error:", StubBOOL},
+    {"GADRewardedInterstitialAd", "canPresentFromRootViewController:error:", StubBOOL},
+    {"GADAppOpenAd", "canPresentFromRootViewController:error:", StubBOOL},
+
+    // ironSource LevelPlay (newer instance API; class API is in kAdClassHooks)
+    {"LPMInterstitialAd", "isAdReady", StubBOOL},
+    {"LPMRewardedAd", "isAdReady", StubBOOL},
+
+    // Vungle / Liftoff Monetize
+    {"VungleInterstitial", "canPlayAd", StubBOOL},
+    {"VungleRewarded", "canPlayAd", StubBOOL},
+    {"VungleInterstitialAd", "canPlayAd", StubBOOL},
+    {"VungleRewardedAd", "canPlayAd", StubBOOL},
+    {"VungleSDK", "isAdCachedForPlacementID:", StubBOOL},
+    {"VungleSDK", "isAdCachedForPlacementID:adMarkup:", StubBOOL},
+
+    // Chartboost
+    {"CHBInterstitial", "isCached", StubBOOL},
+    {"CHBRewarded", "isCached", StubBOOL},
+    {"CHBBanner", "isCached", StubBOOL},
+
+    // Tapjoy
+    {"TJPlacement", "isContentReady", StubBOOL},
+    {"TJPlacement", "isContentAvailable", StubBOOL},
+
+    // Pangle (ByteDance). New PAG* API has no readiness flag — block the show call
+    // (presentFromRootViewController:). Older "BU" SDK exposes a validity flag.
+    {"PAGLInterstitialAd", "presentFromRootViewController:", StubVoid},
+    {"PAGRewardedAd", "presentFromRootViewController:", StubVoid},
+    {"PAGAppOpenAd", "presentFromRootViewController:", StubVoid},
+    {"BUFullscreenVideoAd", "isAdValid", StubBOOL},
+    {"BURewardedVideoAd", "isAdValid", StubBOOL},
+    {"BUNativeExpressFullscreenVideoAd", "isAdValid", StubBOOL},
+
+    // InMobi (older ObjC SDK; the new InMobiSDK.* is Swift and not reachable here)
+    {"IMInterstitial", "isReady", StubBOOL},
+
+    // AdColony (legacy, still embedded via DT mediation)
+    {"AdColonyInterstitial", "expired", StubBOOL},
+
+    // Smaato
+    {"SMAInterstitial", "isAvailableForPresentation", StubBOOL},
+    {"SMARewardedInterstitial", "isAvailableForPresentation", StubBOOL},
+
+    // Yandex Mobile Ads (RU) — block the loaded ad presentation gate where present
+    {"YMAInterstitialAd", "isLoaded", StubBOOL},
+    {"YMARewardedAd", "isLoaded", StubBOOL},
+
+    // Bigo Ads
+    {"BigoInterstitialAd", "isExpired", StubBOOL},
+    {"BigoRewardVideoAd", "isExpired", StubBOOL},
+};
+
+// Class-method "is ready" checks (hook the metaclass).
+static const AdHook kAdClassHooks[] = {
+    // ironSource classic (mediation + DemandOnly) — all class methods returning BOOL
+    {"IronSource", "hasRewardedVideo", StubBOOL},
+    {"IronSource", "hasInterstitial", StubBOOL},
+    {"IronSource", "hasISDemandOnlyInterstitial:", StubBOOL},
+    {"IronSource", "hasISDemandOnlyRewardedVideo:", StubBOOL},
+
+    // Digital Turbine FairBid (formerly Fyber) — class-method availability checks
+    {"FYBInterstitial", "isAvailable:", StubBOOL},
+    {"FYBRewarded", "isAvailable:", StubBOOL},
+};
+
+#pragma mark - Jailbreak-detection bypass table
+
+static const AdHook kJailbreakHooks[] = {
+    {"BUDeviceHelper", "bu_isJailBroken", StubBOOL},
+    {"EBAppLogDeviceHelper", "isJailBroken", StubBOOL},
+    {"HMDBUInfo", "isJailBroken", StubBOOL},
+    {"MobClick", "isJailbroken", StubBOOL},
+    {"MobClick", "isPirated", StubBOOL},
+    {"SSEDeviceStatus", "jailBroken", StubBOOL},
+    {"UMUtils", "isDeviceJailBreak", StubBOOL},
+    {"UMUtils", "isAppPirate", StubBOOL},
+};
+
+#pragma mark - Video ad context + speed-up
+
+// Mark "we are inside an ad" by counting visible ad view-controllers. Uses
+// viewDidAppear:/viewDidDisappear: (distinct from the *blocking* hooks above, which
+// use viewWillAppear:) so the two never collide on the same selector.
+%group AdContext
+
+%hook GADFullScreenAdViewController
+- (void)viewDidAppear:(BOOL)animated    { gAdDepth++;
+#ifdef ADSPEED_DEBUG
+    aspLog(@"ad VC appeared: GADFullScreenAdViewController depth=%d", gAdDepth);
+#endif
+    %orig; }
+- (void)viewDidDisappear:(BOOL)animated { %orig; if (gAdDepth > 0) gAdDepth--; }
 %end
+
+%hook MAFullscreenAdViewController
+- (void)viewDidAppear:(BOOL)animated    { gAdDepth++; %orig; }
+- (void)viewDidDisappear:(BOOL)animated { %orig; if (gAdDepth > 0) gAdDepth--; }
+%end
+
+%end // group AdContext
+
+// Only touch playback rate while an ad is on screen; leave the app's own video alone.
+%hook AVPlayer
+- (void)setRate:(float)rate {
+#ifdef ADSPEED_DEBUG
+    if (gActive && rate > 0.0f) aspLog(@"AVPlayer setRate %.2f adDepth=%d", rate, gAdDepth);
+#endif
+    // Speed native video: in a detected ad VC always, or anywhere if the user lets us
+    // (most AVPlayer activity in these ad-heavy games is the ad itself).
+    if (gActive && gSpeedVideo && rate > 0.0f && (gSpeedNative || gAdDepth > 0)) {
+        %orig(rate * gVideoRate);
+    } else {
+        %orig(rate);
+    }
+}
+%end
+
+#pragma mark - Web ad speed-up (WKWebView)
+
+// Many ad SDKs (Unity Ads, VAST/HTML5 creatives) play video inside a WKWebView, where
+// AVPlayer hooking can't reach. Inject JS at document start that (a) compresses JS
+// timers so countdowns / "skip"/"reward" gating elapse faster, and (b) bumps the
+// playbackRate of any <video>. Applies to every webview the app creates while active.
+// Gentle mode (default): only bump <video> playbackRate, so the creative still plays
+// through to its completion/quartile events and the SDK credits the reward.
+// Aggressive mode (CompressTimers): also divide JS timers — faster, but can let the
+// "close" gate fire before completion, voiding the reward (seen on AppLovin/Mintegral).
+// Two opt-in aggressive layers on top of the always-on <video> playbackRate bump:
+//   compressTimers: divide setTimeout/setInterval delays (timer-driven countdowns).
+//   accelClock:     run Date.now()/performance.now() fast (wall-clock countdowns).
+// Both suit timer-gated playables (reward fires on the timer); on video they can close
+// the ad before completion and void the reward.
+// The timer/clock acceleration only runs while `fast` is true. As soon as a <video>
+// appears we set fast=false, so video ads (which sync the picture to their own clock)
+// don't desync/freeze — they just get playbackRate. Playables (no <video>) keep
+// fast=true and their countdown is accelerated.
+static NSString *webSpeedJS(float rate, BOOL compressTimers, BOOL accelClock) {
+    NSString *timerJS = compressTimers ?
+        @"window.setTimeout=function(f,t){return oST.apply(this,[f,fast?(t||0)/R:(t||0)].concat([].slice.call(arguments,2)));};"
+         "window.setInterval=function(f,t){return oSI.apply(this,[f,fast?(t||0)/R:(t||0)].concat([].slice.call(arguments,2)));};"
+        : @"";
+    NSString *clockJS = accelClock ?
+        @"try{var _l=oDN(),_v=oDN();Date.now=function(){var n=oDN();_v+=(fast?(n-_l)*R:(n-_l));_l=n;return Math.round(_v);};}catch(e){}"
+         "try{if(window.performance&&performance.now){var _opn=performance.now.bind(performance),_pl=_opn(),_pv=_opn();"
+         "performance.now=function(){var n=_opn();_pv+=(fast?(n-_pl)*R:(n-_pl));_pl=n;return _pv;};}}catch(e){}"
+        : @"";
+    return [NSString stringWithFormat:
+        @"(function(){var R=%0.1f;if(R<1)R=1;"
+         "var oST=window.setTimeout,oSI=window.setInterval,oDN=Date.now;var fast=true;%@%@"
+         "function b(){var v=document.getElementsByTagName('video');if(v.length){fast=false;}"
+         "for(var i=0;i<v.length;i++){try{v[i].setAttribute('playsinline','');v[i].setAttribute('webkit-playsinline','');"
+         "v[i].playsInline=true;v[i].playbackRate=R;}catch(e){}}}"
+         "oSI(b,300);document.addEventListener('play',b,true);document.addEventListener('loadedmetadata',b,true);"
+         "})();", rate, timerJS, clockJS];
+}
+
+%hook WKWebView
+- (instancetype)initWithFrame:(CGRect)frame configuration:(WKWebViewConfiguration *)configuration {
+    if (gActive && gSpeedVideo && configuration) {
+        // Keep ad video inline: a fullscreen <video> is handed to the native player
+        // (out of reach of our JS), so force inline + autoplay so playbackRate keeps
+        // applying inside the webview.
+        configuration.allowsInlineMediaPlayback = YES;
+        configuration.mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeNone;
+        WKUserScript *s = [[WKUserScript alloc] initWithSource:webSpeedJS(gVideoRate, gWebTimers, gWebClock)
+                                                 injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                              forMainFrameOnly:NO];
+        [configuration.userContentController addUserScript:s];
+#ifdef ADSPEED_DEBUG
+        aspLog(@"WKWebView created -> injected web speed-up");
+#endif
+    }
+    return %orig;
+}
+%end
+
+#pragma mark - Bootstrap
+
+static BOOL resolveActive(NSDictionary *prefs) {
+#ifdef ADSPEED_FORCE_ON
+    return YES; // standalone / TrollFools build: always on, ignore prefs
+#else
+    if (!prefBool(prefs, kKeyMaster, YES)) return NO;
+    NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
+    NSString *appKey = [kKeyAppPrefix stringByAppendingString:bid];
+    return prefBool(prefs, appKey, NO); // default OFF until enabled in Settings
+#endif
+}
+
+// Which hook tables to (re)install. Ad SDKs load their frameworks lazily after
+// launch, so hooking only once at %ctor misses them — we re-install whenever a new
+// image is loaded.
+static BOOL gInstallAds = NO;
+static BOOL gInstallJB  = NO;
+
+static void installEnabled(void) {
+    if (gInstallAds) {
+        installAll(kAdHooks, sizeof(kAdHooks) / sizeof(kAdHooks[0]));
+        installAllClass(kAdClassHooks, sizeof(kAdClassHooks) / sizeof(kAdClassHooks[0]));
+    }
+    if (gInstallJB)  installAll(kJailbreakHooks, sizeof(kJailbreakHooks) / sizeof(kJailbreakHooks[0]));
+}
+
+// Coalesce bursts of image loads into a single install on the main queue (never hook
+// from inside the dyld callback itself — its lock may be held).
+static void scheduleInstall(void) {
+    static BOOL pending = NO;
+    if (pending) return;
+    pending = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        pending = NO;
+        installEnabled();
+    });
+}
+
+static void imageAdded(const struct mach_header *mh, intptr_t slide) {
+    scheduleInstall();
+}
+
+%ctor {
+    @autoreleasepool {
+        NSDictionary *prefs = loadPrefs();
+        gActive = resolveActive(prefs);
+
+#ifdef ADSPEED_DEBUG
+        NSString *bid = [[NSBundle mainBundle] bundleIdentifier] ?: @"(nil)";
+        aspLog(@"==== AdSpeed loaded in %@ ====", bid);
+        aspLog(@"prefs file found: %@", prefs ? @"YES" : @"NO");
+        aspLog(@"master=%d  appEnabled(%@)=%d  -> active=%d",
+               prefBool(prefs, kKeyMaster, YES),
+               bid, prefBool(prefs, [kKeyAppPrefix stringByAppendingString:bid], NO),
+               gActive);
+#endif
+#ifdef ADSPEED_DUMP
+        // opt-in only; objc_copyClassList crashes some apps even when deferred
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(12 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{ aspDumpAdClasses(); });
+#endif
+
+        if (!gActive) return;
+
+        gSpeedVideo  = prefBool(prefs, kKeySpeedVideo, YES);
+        gWebTimers   = prefBool(prefs, kKeyWebTimers, NO);
+        gWebClock    = prefBool(prefs, kKeyWebClock, NO);
+        gSpeedNative = prefBool(prefs, kKeySpeedNative, YES);
+        id rateVal = prefs[kKeyVideoRate];
+        gVideoRate = rateVal ? [rateVal floatValue] : 8.0f;
+        if (gVideoRate < 1.0f) gVideoRate = 1.0f;
+
+        gInstallAds = prefBool(prefs, kKeyBlockAds, YES);
+        gInstallJB  = prefBool(prefs, kKeyBypassJB, YES);
+
+        installEnabled();                              // classes already loaded
+        _dyld_register_func_for_add_image(&imageAdded); // + lazily-loaded ad SDKs
+
+        if (gSpeedVideo) {
+            %init(AdContext);
+        }
+        // The AVPlayer hook is initialised unconditionally and self-gates on gActive.
+        %init;
+    }
+}

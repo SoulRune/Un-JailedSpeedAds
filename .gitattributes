@@ -1,0 +1,16 @@
+# Build tooling is line-ending sensitive: force LF everywhere so make/dpkg work
+# regardless of the OS the repo is checked out on.
+* text=auto eol=lf
+
+Makefile        text eol=lf
+control         text eol=lf
+*.plist         text eol=lf
+*.xm            text eol=lf
+*.h             text eol=lf
+*.m             text eol=lf
+*.mm            text eol=lf
+*.yml           text eol=lf
+
+Preview.gif     binary
+*.png           binary
+*.deb           binary

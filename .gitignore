@@ -1,0 +1,6 @@
+# Theos build cache & output
+.theos/
+packages/
+
+# Local tooling / OS cruft
+.DS_Store

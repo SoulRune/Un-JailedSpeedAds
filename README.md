@@ -23,7 +23,7 @@ There is no content analysis. The tweak neutralises ads by name:
 After installing the `.deb`, open **Settings → Ads Speed**:
 
 - Master on/off, "Block display ads", "Speed up reward-ad video",
-  "Bypass jailbreak detection".
+  "Bypass ads jailbreak detection".
 - "Video speed → Multiplier" (default 8).
 - **Apps**: a list of every installed app. The tweak only runs in apps you enable
   here. Changes apply the next time the app is launched.

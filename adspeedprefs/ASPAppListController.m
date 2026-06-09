@@ -34,7 +34,7 @@
                                    footer:@"Settings for this app only. They apply next time the app is launched."]];
         [specs addObject:[self switchSpecifierNamed:@"Enabled" key:enableKey default:NO]];
         [specs addObject:[self disable:[self switchSpecifierNamed:@"Block ads" key:[self k:@"BlockAds"] default:NO] when:!enabled]];
-        [specs addObject:[self disable:[self switchSpecifierNamed:@"Bypass jailbreak detection (ad SDKs)" key:[self k:@"BypassJailbreak"] default:YES] when:!enabled]];
+        [specs addObject:[self disable:[self switchSpecifierNamed:@"Bypass ads jailbreak detection" key:[self k:@"BypassJailbreak"] default:YES] when:!enabled]];
 
         [specs addObject:[self groupNamed:@"Fast-forward ads"
                                    footer:!enabled ? @"Enable this app first."

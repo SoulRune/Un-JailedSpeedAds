@@ -7,7 +7,7 @@
 	<key>CFBundleExecutable</key>
 	<string>adspeedprefs</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.34306.adspeedprefs</string>
+	<string>com.34306-sr.adspeedprefs</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>

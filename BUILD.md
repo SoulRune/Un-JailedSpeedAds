@@ -109,8 +109,8 @@ Clone **inside** the Linux filesystem (faster, and avoids Windows CRLF issues):
 
 ```bash
 cd ~
-git clone https://github.com/34306/JailedSpeedAds.git
-cd JailedSpeedAds
+git clone https://github.com/SoulRune/Un-JailedSpeedAds.git
+cd Un-JailedSpeedAds
 ```
 
 > If you instead build from a Windows checkout under `/mnt/d/...`, normalise line
@@ -142,7 +142,7 @@ The finished package lands in `./packages/`.
 ```bash
 # over SSH to the device (rootless path shown)
 scp packages/*.deb mobile@<device-ip>:/var/mobile/
-ssh root@<device-ip> 'dpkg -i /var/mobile/com.34306.adspeed_*.deb; killall -9 SpringBoard'
+ssh root@<device-ip> 'dpkg -i /var/mobile/com.34306-sr.adspeed_*.deb; killall -9 SpringBoard'
 ```
 
 Then open **Settings → Ads Speed** and enable the apps you want.

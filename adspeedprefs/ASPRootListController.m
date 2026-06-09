@@ -95,9 +95,9 @@
                                                        preferredStyle:UIAlertControllerStyleAlert];
     [a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     [a addAction:[UIAlertAction actionWithTitle:@"Reset" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *act) {
-        [[NSFileManager defaultManager] removeItemAtPath:[ASPListBase prefsPathForDomain:@"com.34306.adspeed"] error:nil];
+        [[NSFileManager defaultManager] removeItemAtPath:[ASPListBase prefsPathForDomain:@"com.34306-sr.adspeed"] error:nil];
         CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
-                                             CFSTR("com.34306.adspeed/reloadPrefs"), NULL, NULL, YES);
+                                             CFSTR("com.34306-sr.adspeed/reloadPrefs"), NULL, NULL, YES);
         self->_specifiers = nil;
         [self reloadSpecifiers];
     }]];

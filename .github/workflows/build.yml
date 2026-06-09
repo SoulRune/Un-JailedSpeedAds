@@ -43,6 +43,7 @@ jobs:
             git clone --quiet --recursive https://github.com/theos/theos.git "$THEOS"
           fi
           if [ ! -d "$THEOS/sdks/iPhoneOS16.5.sdk" ]; then
+            rm -rf "$THEOS/sdks"
             git clone --quiet --depth=1 https://github.com/theos/sdks.git "$THEOS/sdks"
           fi
           if [ ! -x "$THEOS/toolchain/linux/iphone/bin/clang" ]; then

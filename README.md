@@ -1,4 +1,4 @@
-# JailedSpeedAds
+# Un-JailedSpeedAds
 
 Block ads and speed up reward-ad videos in iOS apps — works as a rootless jailbreak
 tweak (`.deb`, iOS 15.0+) with a per-app Settings panel, or statically injected into

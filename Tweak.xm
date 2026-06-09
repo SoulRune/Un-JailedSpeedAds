@@ -48,8 +48,8 @@ static NSDictionary *loadPrefs(void) {
     // directly so it works regardless of sandbox/CFPreferences quirks. Try rootless
     // first, then rootful.
     NSArray *paths = @[
-        @"/var/jb/var/mobile/Library/Preferences/com.34306.adspeed.plist",
-        @"/var/mobile/Library/Preferences/com.34306.adspeed.plist",
+        @"/var/jb/var/mobile/Library/Preferences/com.34306-sr.adspeed.plist",
+        @"/var/mobile/Library/Preferences/com.34306-sr.adspeed.plist",
     ];
     for (NSString *p in paths) {
         NSDictionary *d = [NSDictionary dictionaryWithContentsOfFile:p];

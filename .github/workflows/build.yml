@@ -2,15 +2,17 @@ name: Build
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
     tags: [ '*' ]
   pull_request:
   workflow_dispatch:
 
 jobs:
   build:
-    # 22.04 ships libtinfo5/libncurses5 that the Theos Linux toolchain needs.
-    runs-on: ubuntu-22.04
+    # Apple Silicon macOS (not Intel). The Xcode toolchain emits arm64e and lipo can merge
+    # the arm64 + arm64e slices, so the package hooks system processes on A12+ devices too
+    # (a Linux/arm64-only build can't).
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,88 +21,60 @@ jobs:
         id: ver
         run: echo "version=$(grep '^Version:' control | awk '{print $2}')" >> "$GITHUB_OUTPUT"
 
-      - name: Install build dependencies
+      - name: Install tooling
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential fakeroot rsync perl curl ca-certificates \
-            zip unzip git dpkg-dev libtinfo5 libncurses5 llvm
+          # ldid (fake-signing), dpkg (dpkg-deb packaging), GNU make (theos wants make 4+).
+          brew install ldid dpkg make
+          echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
 
       - name: Cache Theos
         id: cache-theos
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/theos
-          key: theos-${{ runner.os }}-v1
+          key: theos-macos-v2
 
       - name: Set up Theos
         env:
           THEOS: ${{ github.workspace }}/theos
         run: |
-          # Manual setup — install-theos' toolchain download is unreliable on Linux
-          # (often fetches an HTML redirect instead of the .tar.xz).
           if [ ! -x "$THEOS/bin/logos.pl" ]; then
+            rm -rf "$THEOS"
             git clone --quiet --recursive https://github.com/theos/theos.git "$THEOS"
           fi
-          if [ ! -d "$THEOS/sdks/iPhoneOS16.5.sdk" ]; then
+          # Xcode's iOS SDK ships private-framework headers but no link stubs, so the
+          # prefs bundle fails to link against Preferences. Theos's patched SDK ships the
+          # stubs (and headers), and Xcode's clang still emits arm64e against it.
+          if ! ls "$THEOS"/sdks/iPhoneOS*.sdk >/dev/null 2>&1; then
             rm -rf "$THEOS/sdks"
             git clone --quiet --depth=1 https://github.com/theos/sdks.git "$THEOS/sdks"
           fi
-          if [ ! -x "$THEOS/toolchain/linux/iphone/bin/clang" ]; then
-            mkdir -p "$THEOS/toolchain/linux/iphone"
-            # x86_64 / ubuntu22.04 build (matches the runner).
-            url=$(curl -fsSL https://api.github.com/repos/kabiroberai/swift-toolchain-linux/releases/latest \
-                  | grep browser_download_url | grep 'ubuntu22.04.tar.xz' | grep -v aarch64 \
-                  | head -n1 | cut -d'"' -f4)
-            echo "Toolchain: $url"
-            curl -L --fail --retry 5 --retry-delay 3 "$url" -o /tmp/toolchain.tar.xz
-            file /tmp/toolchain.tar.xz | grep -q 'XZ compressed' \
-              || { echo "Toolchain download is not an xz archive"; exit 1; }
-            tar -xf /tmp/toolchain.tar.xz -C "$THEOS/toolchain/linux/iphone" --strip-components=1
-            # Archive nests host/ and iphone/: expose the host compiler flat.
-            TC="$THEOS/toolchain/linux/iphone"
-            [ -d "$TC/host/bin" ] && ln -sfn host/bin "$TC/bin" && ln -sfn host/lib "$TC/lib"
-            # clang calls the linker as "ld"; lld picks ELF vs Mach-O from argv[0], so a
-            # symlink would run in ELF mode. Wrap it to re-invoke lld as ld64.lld.
-            rm -f "$TC/host/bin/ld"
-            printf '#!/bin/sh\nexec "$(dirname "$0")/ld64.lld" "$@"\n' > "$TC/host/bin/ld"
-            chmod +x "$TC/host/bin/ld"
-            # Theos calls cctools names; this toolchain lacks them, so alias to system LLVM.
-            LLVMDIR=$(ls -d /usr/lib/llvm-*/bin 2>/dev/null | sort -V | tail -1)
-            for pair in strip:llvm-strip lipo:llvm-lipo install_name_tool:llvm-install-name-tool \
-                        nm:llvm-nm otool:llvm-otool objcopy:llvm-objcopy ranlib:llvm-ranlib dsymutil:dsymutil; do
-              name=${pair%%:*}; src=${pair##*:}
-              [ -x "$LLVMDIR/$src" ] && ln -sfn "$LLVMDIR/$src" "$TC/host/bin/$name"
-            done
-          fi
-          # ldid for fake-signing
-          if [ ! -x "$THEOS/bin/ldid" ]; then
-            url=$(curl -fsSL https://api.github.com/repos/ProcursusTeam/ldid/releases/latest \
-                  | grep browser_download_url | grep 'ldid_linux_x86_64"' | head -n1 | cut -d'"' -f4)
-            curl -L --fail --retry 5 "$url" -o "$THEOS/bin/ldid" && chmod +x "$THEOS/bin/ldid"
-          fi
           echo "THEOS=$THEOS" >> "$GITHUB_ENV"
 
-      # Each variant is a separate build stage; all outputs collect into dist/ and ship
-      # as a single artifact archive.
-      - name: Build rootless .deb
+      # Each variant is a separate stage; outputs collect into dist/ and ship as one artifact.
+      # Pin the SDK to the patched 16.5 from $THEOS/sdks. Without this, TARGET "latest"
+      # resolves to Xcode's iOS 18 SDK (higher version), which has no Preferences link stub.
+      # TARGET on the command line overrides both Makefiles, incl. the subproject.
+      - name: Build rootless .deb (arm64 + arm64e)
         run: |
           rm -rf packages
           make clean || true
-          make package FINALPACKAGE=1
+          make package FINALPACKAGE=1 ARCHS="arm64 arm64e" TARGET="iphone:clang:16.5:15.0"
           mkdir -p dist && cp packages/*.deb dist/
 
-      - name: Build rootful .deb
+      - name: Build rootful .deb (arm64 + arm64e)
         run: |
           rm -rf packages
           make clean || true
-          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=
+          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME= ARCHS="arm64 arm64e" TARGET="iphone:clang:16.5:15.0"
           cp packages/*.deb dist/
 
+      # Jailed injection targets sideloaded App Store apps, which run as arm64 — keep this
+      # slice arm64-only (no Preferences here, so no patched SDK needed, but pin anyway).
       - name: Build jailed dylib (TrollFools / Sideloadly)
         run: |
           make clean || true
-          make jailed FINALPACKAGE=1
+          make jailed FINALPACKAGE=1 TARGET="iphone:clang:16.5:15.0"
           cp packages/adspeed-jailed.dylib dist/
 
       - name: Upload combined archive

@@ -1,7 +1,7 @@
 Package: com.34306-sr.adspeed
 Name: Ads Speed
 Depends: ellekit | mobilesubstrate, preferenceloader
-Version: 2.2.1
+Version: 2.2.1.1
 Architecture: iphoneos-arm
 Conflicts: com.34306.adspeed
 Replaces: com.34306.adspeed

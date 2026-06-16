@@ -44,6 +44,19 @@ static NSString *const kNotify = @"com.34306-sr.adspeed/reloadPrefs";
     return v ? [v boolValue] : def;
 }
 
+// Direct key write (used by the swipe-to-toggle quick action), matching the path/domain
+// and reload notification used by the specifier setter.
+- (void)setBool:(BOOL)value forKey:(NSString *)key {
+    NSString *path = [ASPListBase prefsPathForDomain:kDomain];
+    [[NSFileManager defaultManager] createDirectoryAtPath:[path stringByDeletingLastPathComponent]
+                              withIntermediateDirectories:YES attributes:nil error:nil];
+    NSMutableDictionary *settings = [NSMutableDictionary dictionaryWithContentsOfFile:path] ?: [NSMutableDictionary dictionary];
+    settings[key] = @(value);
+    [settings writeToFile:path atomically:YES];
+    CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                         (__bridge CFStringRef)kNotify, NULL, NULL, YES);
+}
+
 - (PSSpecifier *)switchSpecifierNamed:(NSString *)name key:(NSString *)key default:(BOOL)def {
     PSSpecifier *s = [PSSpecifier preferenceSpecifierNamed:name
                                                    target:self

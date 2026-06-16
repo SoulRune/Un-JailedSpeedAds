@@ -123,4 +123,26 @@
     }
 }
 
+// Swipe an app row left for a quick enable/disable, without opening its page. Only the
+// app rows carry a "bid"; the master switch, groups and reset button return no actions.
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [tableView cellForRowAtIndexPath:indexPath];
+    if (![cell respondsToSelector:@selector(specifier)]) return nil;
+    NSString *bid = [[(id)cell specifier] propertyForKey:@"bid"];
+    if (!bid) return nil;
+
+    BOOL enabled = [self appEnabled:bid];
+    UIContextualAction *act =
+        [UIContextualAction contextualActionWithStyle:UIContextualActionStyleNormal
+                                                title:(enabled ? @"Disable" : @"Enable")
+                                              handler:^(UIContextualAction *a, UIView *v, void (^done)(BOOL)) {
+        [self setBool:!enabled forKey:[@"enabled-" stringByAppendingString:bid]];
+        done(YES);
+        self->_specifiers = nil;
+        [self reloadSpecifiers];
+    }];
+    act.backgroundColor = enabled ? [UIColor systemRedColor] : [UIColor systemGreenColor];
+    return [UISwipeActionsConfiguration configurationWithActions:@[act]];
+}
+
 @end

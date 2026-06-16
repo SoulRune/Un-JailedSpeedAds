@@ -6,6 +6,7 @@
 @interface ASPListBase : PSListController
 + (NSString *)prefsPathForDomain:(NSString *)domain;
 - (BOOL)boolPref:(NSString *)key default:(BOOL)def;
+- (void)setBool:(BOOL)value forKey:(NSString *)key;   // write + notify the tweak
 - (PSSpecifier *)switchSpecifierNamed:(NSString *)name key:(NSString *)key default:(BOOL)def;
 - (PSSpecifier *)subSwitchNamed:(NSString *)name key:(NSString *)key default:(BOOL)def;
 - (PSSpecifier *)groupNamed:(NSString *)name footer:(NSString *)footer;

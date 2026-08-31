@@ -74,3 +74,12 @@ they won't load.
 - `adspeedprefs/` — the Settings panel (PreferenceBundle).
 - `adspeed.plist` — injection filter (all UIKit apps; the runtime gate decides).
 - `layout/` — PreferenceLoader entry.
+
+
+## License
+
+This project is licensed under the GNU General Public License v3.0 (see [LICENSE](LICENSE)).
+
+All code in this repository from commit [2085624ea5551efc95e7775394e3e24b1893efbb](https://github.com/SoulRune/Un-JailedSpeedAds/commit/2085624ea5551efc95e7775394e3e24b1893efbb) onwards is licensed under GPLv3.
+
+**Note:** This project based on and rewritten from [34306/JailedSpeedAds](https://github.com/34306/JailedSpeedAds), which is not explicitly licensed. The original foundation belongs to its author; all extensive rewrites, optimizations, and new code starting from the specified commit are fully covered by the GPLv3 license.

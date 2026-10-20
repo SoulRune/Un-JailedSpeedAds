@@ -78,8 +78,10 @@ they won't load.
 
 ## License
 
-This project is licensed under the GNU General Public License v3.0 (see [LICENSE](LICENSE)).
+Licensed under the GNU General Public License v3.0 (see [LICENSE](LICENSE)).
 
-All code in this repository from commit [2085624ea5551efc95e7775394e3e24b1893efbb](https://github.com/SoulRune/Un-JailedSpeedAds/commit/2085624ea5551efc95e7775394e3e24b1893efbb) onwards is licensed under GPLv3.
-
-**Note:** This project based on and rewritten from [34306/JailedSpeedAds](https://github.com/34306/JailedSpeedAds), which is not explicitly licensed. The original foundation belongs to its author; all extensive rewrites, optimizations, and new code starting from the specified commit are fully covered by the GPLv3 license.
+The tweak started as a fork of [34306/JailedSpeedAds](https://github.com/34306/JailedSpeedAds)
+and was rewritten almost from scratch by SoulRune, starting with commit
+[`2085624`](https://github.com/SoulRune/Un-JailedSpeedAds/commit/2085624ea5551efc95e7775394e3e24b1893efbb).
+The license covers all of that work, including the commits made before the LICENSE file
+was added (`2085624` to `c899665`). No code from the original project remains.

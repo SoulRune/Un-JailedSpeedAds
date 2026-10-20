@@ -59,14 +59,14 @@ jobs:
         run: |
           rm -rf packages
           make clean || true
-          make package FINALPACKAGE=1 ARCHS="arm64 arm64e" TARGET="iphone:clang:16.5:15.0"
+          make package FINALPACKAGE=1 ARCHS="arm64 arm64e" TARGET="iphone:clang:16.5:14.0"
           mkdir -p dist && cp packages/*.deb dist/
 
       - name: Build rootful .deb (arm64 + arm64e)
         run: |
           rm -rf packages
           make clean || true
-          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME= ARCHS="arm64 arm64e" TARGET="iphone:clang:16.5:15.0"
+          make package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME= ARCHS="arm64 arm64e" TARGET="iphone:clang:16.5:14.0"
           cp packages/*.deb dist/
 
       # Jailed injection targets sideloaded App Store apps, which run as arm64 — keep this
@@ -74,7 +74,7 @@ jobs:
       - name: Build jailed dylib (TrollFools / Sideloadly)
         run: |
           make clean || true
-          make jailed FINALPACKAGE=1 ARCHS="arm64 arm64e" TARGET="iphone:clang:16.5:15.0"
+          make jailed FINALPACKAGE=1 ARCHS="arm64 arm64e" TARGET="iphone:clang:16.5:14.0"
           cp packages/adspeed-jailed.dylib dist/
 
       - name: Upload combined archive

@@ -1,17 +1,13 @@
-export THEOS_PACKAGE_SCHEME = rootless   # default; for a rootful .deb: make package THEOS_PACKAGE_SCHEME=
+export THEOS_PACKAGE_SCHEME = rootless   # rootful: make package THEOS_PACKAGE_SCHEME=
 
-# arm64 only by default: the Linux Swift toolchain's clang doesn't tag arm64e with a
-# distinct CPU subtype, so lipo can't merge the two slices.
-#
-# arm64 already covers App Store / user apps (which run as arm64) — the main target for
-# ad blocking/speed-up. On A12+ devices the system processes run as arm64e, so add an
-# arm64e slice to also hook those, which needs a macOS toolchain. The GitHub Actions
-# build (macOS) does exactly that:  make package ARCHS="arm64 arm64e"
+# arm64 only, because of Linux/WSL builds: that toolchain's clang doesn't give arm64e
+# its own CPU subtype, so lipo can't merge the two slices. arm64 is enough for App Store
+# apps. On A12+ the Settings panel and system processes need arm64e, so release builds
+# are made on macOS (GitHub Actions) with ARCHS="arm64 arm64e" on the command line,
+# which also applies to adspeedprefs.
 ARCHS = arm64
-# platform:compiler:sdk:deployment. iOS 15.0 minimum (rootless-only tweak).
-# A modern minimum also makes clang emit the new -platform_version flag that
-# ld64.lld requires. "latest" picks the newest installed SDK.
-TARGET = iphone:clang:latest:15.0
+# iOS 14.0 minimum (rootful; rootless jailbreaks start at 15). "latest" = newest SDK.
+TARGET = iphone:clang:latest:14.0
 DEBUG = 0
 FINALPACKAGE = 1
 FOR_RELEASE = 1
@@ -25,7 +21,7 @@ adspeed_FILES = Tweak.xm
 adspeed_CFLAGS = -fobjc-arc
 adspeed_CCFLAGS = -std=c++11 -fno-rtti -fno-exceptions -DNDEBUG
 adspeed_FRAMEWORKS = UIKit QuartzCore CoreGraphics AVFoundation WebKit
-adspeed_LDFLAGS = -Wl,-platform_version,ios,15.0,16.5
+adspeed_LDFLAGS = -Wl,-platform_version,ios,14.0,16.5
 
 # Build the per-app Settings panel together with the tweak.
 SUBPROJECTS = adspeedprefs

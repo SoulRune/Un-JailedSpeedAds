@@ -102,7 +102,7 @@ Packages are written to `packages/`.
 
 ```sh
 scp packages/*.deb mobile@<device-ip>:/var/mobile/
-ssh root@<device-ip> 'dpkg -i /var/mobile/com.34306-sr.adspeed_*.deb; killall -9 SpringBoard'
+ssh root@<device-ip> 'dpkg -i /var/mobile/com.soulrune.adspeed_*.deb; killall -9 SpringBoard'
 ```
 
 Open **Settings > Ads Speed** and enable the target apps.

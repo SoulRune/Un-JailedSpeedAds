@@ -7,8 +7,10 @@ Blocks known advertising SDKs and speeds up reward videos in selected iOS apps.
 | Build | Use |
 | --- | --- |
 | Rootless `.deb` | iOS 15+ jailbreaks such as Dopamine and rootless palera1n |
-| Rootful `.deb` | Rootful jailbreak environments |
+| Rootful `.deb` | iOS 14+ rootful jailbreaks such as unc0ver, Taurine and rootful palera1n |
 | Jailed `.dylib` | Injection into one IPA; web video speed only |
+
+iOS 14 support hasn't been tested yet.
 
 The jailed build does not include native AVPlayer acceleration, timer changes, ad blocking, or a Settings bundle. It needs a substrate provider supplied by the injection tool.
 

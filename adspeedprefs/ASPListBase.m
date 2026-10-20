@@ -1,8 +1,8 @@
 #import "ASPListBase.h"
 #import <UIKit/UIKit.h>
 
-static NSString *const kDomain = @"com.34306-sr.adspeed";
-static NSString *const kNotify = @"com.34306-sr.adspeed/reloadPrefs";
+static NSString *const kDomain = @"com.soulrune.adspeed";
+static NSString *const kNotify = @"com.soulrune.adspeed/reloadPrefs";
 
 @implementation ASPListBase
 

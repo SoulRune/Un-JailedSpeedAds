@@ -431,17 +431,25 @@ static const AdHook kJailbreakHooks[] = {
 %group AdContext
 
 %hook GADFullScreenAdViewController
-- (void)viewDidAppear:(BOOL)animated    { gAdDepth++;
-#ifdef ADSPEED_DEBUG
-    aspLog(@"ad VC appeared: GADFullScreenAdViewController depth=%d", gAdDepth);
-#endif
-    %orig; }
-- (void)viewDidDisappear:(BOOL)animated { %orig; if (gAdDepth > 0) gAdDepth--; }
+- (void)viewDidAppear:(BOOL)animated {
+    gAdDepth++;
+    %orig;
+}
+- (void)viewDidDisappear:(BOOL)animated {
+    %orig;
+    if (gAdDepth > 0) gAdDepth--;
+}
 %end
 
 %hook MAFullscreenAdViewController
-- (void)viewDidAppear:(BOOL)animated    { gAdDepth++; %orig; }
-- (void)viewDidDisappear:(BOOL)animated { %orig; if (gAdDepth > 0) gAdDepth--; }
+- (void)viewDidAppear:(BOOL)animated {
+    gAdDepth++;
+    %orig;
+}
+- (void)viewDidDisappear:(BOOL)animated {
+    %orig;
+    if (gAdDepth > 0) gAdDepth--;
+}
 %end
 
 %end // group AdContext

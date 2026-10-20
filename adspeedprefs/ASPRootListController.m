@@ -83,6 +83,9 @@
         [reset setProperty:@YES forKey:@"enabled"];
         [specs addObject:reset];
 
+        [specs addObject:[self groupNamed:@"Credits"
+                                   footer:@"By SoulRune. Docs and build fixes: maxblox2999."]];
+
         _specifiers = [specs copy];
     }
     return _specifiers;

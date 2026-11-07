@@ -23,7 +23,9 @@
 
         NSString *enableKey = [@"enabled-" stringByAppendingString:[self bid]];
         BOOL enabled  = [self boolPref:enableKey default:NO];
-        BOOL blocked  = [self boolPref:[self k:@"BlockAds"] default:NO];
+        BOOL blockNet = [self boolPref:[self k:@"BlockAds"] default:NO];
+        BOOL blockStb = [self boolPref:[self k:@"BlockAdsStubs"] default:NO];
+        BOOL blocked  = blockNet || blockStb;
         BOOL speedOn  = [self boolPref:[self k:@"SpeedUpVideo"] default:YES];
         BOOL timersOn = [self boolPref:[self k:@"CompressTimers"] default:NO];
         // Everything but the Enabled switch is greyed while the app is off; the speed-up
@@ -33,8 +35,14 @@
         [specs addObject:[self groupNamed:nil
                                    footer:@"Settings for this app only. They apply next time the app is launched."]];
         [specs addObject:[self switchSpecifierNamed:@"Enabled" key:enableKey default:NO]];
-        [specs addObject:[self disable:[self switchSpecifierNamed:@"Block ads" key:[self k:@"BlockAds"] default:NO] when:!enabled]];
         [specs addObject:[self disable:[self switchSpecifierNamed:@"Bypass ads jailbreak detection" key:[self k:@"BypassJailbreak"] default:YES] when:!enabled]];
+
+        [specs addObject:[self groupNamed:@"Block ads"
+                                   footer:!enabled ? @"Enable this app first."
+                                   : @"“Block ads” blocks requests to ad servers. “Aggressive SDK stubs” also patches ad SDK "
+                                     @"methods; it can stall some apps, so turn it on only if ads still appear."]];
+        [specs addObject:[self disable:[self switchSpecifierNamed:@"Block ads" key:[self k:@"BlockAds"] default:NO] when:!enabled]];
+        [specs addObject:[self disable:[self subSwitchNamed:@"Aggressive SDK stubs" key:[self k:@"BlockAdsStubs"] default:NO] when:!enabled]];
 
         [specs addObject:[self groupNamed:@"Fast-forward ads"
                                    footer:!enabled ? @"Enable this app first."
@@ -60,9 +68,9 @@
         }
 
         [specs addObject:[self groupNamed:@"Speed"
-                                   footer:@"How many times faster (default 8). If a reward stops counting, "
+                                   footer:@"How many times faster (default 5; higher costs more battery). If a reward stops counting, "
                                           @"lower it to 3–4 — high speeds can skip the ad's completion event."]];
-        [specs addObject:[self disable:[self numberFieldNamed:@"Multiplier" key:[self k:@"VideoRate"] default:@(8)] when:speedOff]];
+        [specs addObject:[self disable:[self numberFieldNamed:@"Multiplier" key:[self k:@"VideoRate"] default:@(5)] when:speedOff]];
 
         _specifiers = [specs copy];
     }
@@ -75,6 +83,7 @@
     NSString *changed = [specifier propertyForKey:@"key"];
     if ([changed isEqualToString:[@"enabled-" stringByAppendingString:[self bid]]] ||
         [changed isEqualToString:[self k:@"BlockAds"]] ||
+        [changed isEqualToString:[self k:@"BlockAdsStubs"]] ||
         [changed isEqualToString:[self k:@"SpeedUpVideo"]] ||
         [changed isEqualToString:[self k:@"CompressTimers"]]) {
         _specifiers = nil;

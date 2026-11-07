@@ -3,6 +3,7 @@
         bundle = adspeedprefs;
         cell = PSLinkCell;
         detail = ASPRootListController;
+        icon = "icon.png";
         isController = 1;
         label = "Ads Speed";
     };

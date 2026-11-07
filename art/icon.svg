@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="18 18 72 72" width="72" height="72">
+  <!-- Same glyph as the Android launcher icon (108-unit canvas, 72-unit visible area). -->
+  <rect x="18" y="18" width="72" height="72" rx="16.1" fill="#1F6FEB"/>
+  <path fill="#FFFFFF" d="M33,38 L53,54 L33,70 Z"/>
+  <path fill="#FFFFFF" d="M53,38 L73,54 L53,70 Z"/>
+  <path fill="#FFFFFF" d="M74,38 h4 v32 h-4 Z"/>
+</svg>

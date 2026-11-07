@@ -26,8 +26,8 @@ adspeed_LDFLAGS = -Wl,-platform_version,ios,14.0,16.5
 # Build the per-app Settings panel together with the tweak.
 SUBPROJECTS = adspeedprefs
 
-# JAILED=1 -> standalone "just speed-up" dylib for .ipa injection. The prefs/blocking
-# code paths are #ifdef'd out, leaving those helpers unused, so silence -Werror on them.
+# JAILED=1 -> standalone dylib for .ipa injection, configured by an optional adspeed.plist.
+# The Settings-panel helpers are unused there, so silence -Werror on them.
 ifeq ($(JAILED),1)
 adspeed_CFLAGS += -DADSPEED_JAILED -Wno-unused-function -Wno-unused-const-variable -Wno-unused-variable
 SUBPROJECTS =
@@ -36,11 +36,18 @@ endif
 include $(THEOS_MAKE_PATH)/tweak.mk
 include $(THEOS_MAKE_PATH)/aggregate.mk
 
-# `make jailed` builds the injection dylib (web speed-up only) and drops it into
-# packages/ next to the .debs. Inject it into an .ipa via TrollFools / Sideloadly.
+# Package icon for Sileo / Zebra / Cydia; the path follows the rootless/rootful prefix.
+before-package:: $(THEOS_STAGING_DIR)/DEBIAN/control
+	@echo "Icon: file://$(THEOS_PACKAGE_INSTALL_PREFIX)/Library/PreferenceBundles/adspeedprefs.bundle/package-icon.png" >> "$(THEOS_STAGING_DIR)/DEBIAN/control"
+
+# `make jailed` builds packages/adspeed-jailed.zip: the dylib, adspeed.plist and README.txt.
 .PHONY: jailed
 jailed:
 	@$(MAKE) JAILED=1
-	@mkdir -p packages
-	@cp "$$(ls $(THEOS_OBJ_DIR)/adspeed.dylib 2>/dev/null || find .theos/obj -name adspeed.dylib | head -n1)" packages/adspeed-jailed.dylib
-	@echo "==> packages/adspeed-jailed.dylib"
+	@rm -rf packages/jailed && mkdir -p packages/jailed
+	@cp "$$(ls $(THEOS_OBJ_DIR)/adspeed.dylib 2>/dev/null || find .theos/obj -name adspeed.dylib | head -n1)" packages/jailed/adspeed-jailed.dylib
+	@cp adspeed-jailed.example.plist packages/jailed/adspeed.plist
+	@cp jailed-README.txt packages/jailed/README.txt
+	@rm -f packages/adspeed-jailed.zip
+	@cd packages/jailed && zip -q -X ../adspeed-jailed.zip adspeed-jailed.dylib adspeed.plist README.txt
+	@echo "==> packages/adspeed-jailed.zip"

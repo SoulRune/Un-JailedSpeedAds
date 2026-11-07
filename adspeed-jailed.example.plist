@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Settings for the jailed dylib. Rename to adspeed.plist and put it next to the injected
+     dylib, in the .app root, or in the app's Documents folder. Missing keys use defaults. -->
+<plist version="1.0">
+<dict>
+	<key>Enabled</key>
+	<true/>
+	<key>SpeedUpVideo</key>
+	<true/>
+	<key>VideoRate</key>
+	<real>5</real>
+	<key>SpeedNativeVideo</key>
+	<false/>
+	<key>CompressTimers</key>
+	<false/>
+	<key>AccelerateClock</key>
+	<false/>
+	<key>ForceInline</key>
+	<false/>
+	<key>BlockAds</key>
+	<false/>
+	<key>BlockAdsStubs</key>
+	<false/>
+	<key>BypassJailbreak</key>
+	<false/>
+</dict>
+</plist>

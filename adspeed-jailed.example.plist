@@ -20,7 +20,9 @@
 	<false/>
 	<key>BlockAds</key>
 	<false/>
-	<key>BlockAdsStubs</key>
+	<key>BlockAdServers</key>
+	<false/>
+	<key>BlockStore</key>
 	<false/>
 	<key>BypassJailbreak</key>
 	<false/>

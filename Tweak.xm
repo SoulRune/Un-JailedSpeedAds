@@ -7,25 +7,32 @@
 //      compile with -DADSPEED_FORCE_ON so it is always active and ignores prefs.
 //
 // Blocking, per app:
-//   - "Block ads": requests to known ad hosts fail with "cannot find host", so every SDK
-//     (Swift ones included) reports a normal load failure.
-//   - "Aggressive SDK stubs": ready/show methods of known ad SDK classes are stubbed.
-//     Catches cached ads, but can stall apps that wait for an ad.
+//   - "Block ads": "is the ad ready" checks of known ad SDK classes return NO, so the app
+//     skips the ad. Show/present calls are never stubbed (the app would wait forever).
+//   - "Block ad servers" (off by default): requests to known ad hosts fail like a DNS
+//     block, after a delay so SDK retry loops can't spin. Ads that wait for a load may
+//     then never show.
 // Video is sped up only while a known ad view-controller is on screen (aspAdDepth).
+// "Block App Store" (off by default): no store sheet / overlay / redirect from ads, and no
+// links out while an ad is on screen.
 
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <substrate.h>
 #import <mach-o/dyld.h>
 #import <dlfcn.h>
 #import <WebKit/WebKit.h>
 #import <AVFoundation/AVFoundation.h>
+#import <UIKit/UIKit.h>
 
 #pragma mark - Preferences
 
 static NSString *const kKeyMaster     = @"Enabled";        // master on/off, default YES
-static NSString *const kKeyBlockAds   = @"BlockAds";       // block ad hosts, default NO
-static NSString *const kKeyBlockStubs = @"BlockAdsStubs";  // SDK method stubs, default NO
+static NSString *const kKeyBlockAds   = @"BlockAds";       // SDK "ready" stubs, default NO
+static NSString *const kKeyBlockNet   = @"BlockAdServers"; // block ad hosts, default NO
+static NSString *const kKeyBlockStubsOld = @"BlockAdsStubs"; // interim name of BlockAds, still read
+static NSString *const kKeyBlockStore = @"BlockStore";     // no App Store from ads, default NO
 static NSString *const kKeySpeedVideo = @"SpeedUpVideo";   // speed up ad video, default YES
 static NSString *const kKeyVideoRate  = @"VideoRate";      // playback multiplier
 static const float kDefaultVideoRate = 5.0f;               // higher rates cost noticeably more CPU
@@ -45,6 +52,7 @@ static BOOL  gForceInline  = NO;
 static BOOL  gSpeedNative  = NO;
 static float gVideoRate  = kDefaultVideoRate;
 static BOOL  gBlockNet   = NO;    // block ad hosts
+static BOOL  gBlockStore = NO;    // block App Store sheets / redirects from ads
 
 static NSDictionary *loadPrefs(void) {
     // The Settings panel writes via CFPreferences for the mobile user; read the plist
@@ -390,7 +398,6 @@ static const AdHook kAdHooks[] = {
 
     // AdColony (legacy, still embedded via DT mediation)
     {"AdColonyInterstitial", "expired", StubTRUE},
-    {"AdColonyInterstitial", "showWithPresentingViewController:", StubBOOL},
 
     // Smaato
     {"SMAInterstitial", "isAvailableForPresentation", StubBOOL},
@@ -403,21 +410,15 @@ static const AdHook kAdHooks[] = {
     // Bigo Ads
     {"BigoInterstitialAd", "isExpired", StubTRUE},
     {"BigoRewardVideoAd", "isExpired", StubTRUE},
-    {"BigoInterstitialAd", "show:", StubVoid},
-    {"BigoSplashAd", "show:", StubVoid},
 
     // ===================================================================
     // GMA 13, AppLovin 13, LevelPlay 9, Vungle 7, Pangle 8, Mintegral 8, InMobi 11,
     // Chartboost 9, Moloco 4, Ogury, MobileFuse, Start.io, Smaato 10, Tapjoy 14.
-    // Show/present calls are stubbed too, so a cached ad can't be presented.
-    // Swift classes use their runtime (mangled) names.
+    // Readiness checks only: a stubbed show/present call would leave the app waiting for
+    // a callback that never comes. Swift classes use their runtime (mangled) names.
     // ===================================================================
 
     // Google Mobile Ads 12/13
-    {"GADInterstitialAd", "presentFromRootViewController:", StubVoid},
-    {"GADAppOpenAd", "presentFromRootViewController:", StubVoid},
-    {"GADRewardedAd", "presentFromRootViewController:userDidEarnRewardHandler:", StubVoid},
-    {"GADRewardedInterstitialAd", "presentFromRootViewController:userDidEarnRewardHandler:", StubVoid},
     // Preloader API (GAD*AdPreloader sharedInstance)
     {"GADInterstitialAdPreloader", "isAdAvailableWithPreloadID:", StubBOOL},
     {"GADInterstitialAdPreloader", "adWithPreloadID:", StubNil},
@@ -429,86 +430,45 @@ static const AdHook kAdHooks[] = {
     {"GADAppOpenAdPreloader", "adWithPreloadID:", StubNil},
 
     // AppLovin MAX 13
-    {"MAInterstitialAd", "showAd", StubVoid},
-    {"MAInterstitialAd", "showAdForPlacement:", StubVoid},
-    {"MAInterstitialAd", "showAdForPlacement:customData:", StubVoid},
-    {"MAInterstitialAd", "showAdForPlacement:customData:viewController:", StubVoid},
-    {"MARewardedAd", "showAd", StubVoid},
-    {"MARewardedAd", "showAdForPlacement:", StubVoid},
-    {"MARewardedAd", "showAdForPlacement:customData:", StubVoid},
-    {"MARewardedAd", "showAdForPlacement:customData:viewController:", StubVoid},
-    {"MAAppOpenAd", "showAd", StubVoid},
-    {"MAAppOpenAd", "showAdForPlacement:", StubVoid},
-    {"MAAppOpenAd", "showAdForPlacement:customData:", StubVoid},
 
     // ironSource LevelPlay 8/9
-    {"LPMInterstitialAd", "showAdWithViewController:placementName:", StubVoid},
-    {"LPMRewardedAd", "showAdWithViewController:placementName:", StubVoid},
 
     // Liftoff / Vungle 7 (Swift)
     {"_TtC12VungleAdsSDK12BasePublicAd", "canPlayAd", StubBOOL},
-    {"_TtC12VungleAdsSDK18VungleInterstitial", "presentWith:", StubVoid},
-    {"_TtC12VungleAdsSDK14VungleRewarded", "presentWith:", StubVoid},
 
     // Pangle 7/8
-    {"PAGLAppOpenAd", "presentFromRootViewController:", StubVoid},
 
     // Mintegral 7/8
-    {"MTGRewardAdManager", "showVideoWithPlacementId:unitId:userId:delegate:viewController:", StubVoid},
-    {"MTGRewardAdManager", "showVideoWithPlacementId:unitId:userId:userExtra:delegate:viewController:", StubVoid},
-    {"MTGBidRewardAdManager", "showVideoWithPlacementId:unitId:userId:delegate:viewController:", StubVoid},
-    {"MTGBidRewardAdManager", "showVideoWithPlacementId:unitId:userId:userExtra:delegate:viewController:", StubVoid},
-    {"MTGNewInterstitialAdManager", "showFromViewController:", StubVoid},
-    {"MTGNewInterstitialBidAdManager", "showFromViewController:", StubVoid},
     {"MTGInterstitialVideoAdManager", "isVideoReadyToPlayWithPlacementId:unitId:", StubBOOL},
-    {"MTGInterstitialVideoAdManager", "showFromViewController:", StubVoid},
     {"MTGBidInterstitialVideoAdManager", "isVideoReadyToPlayWithPlacementId:unitId:", StubBOOL},
-    {"MTGBidInterstitialVideoAdManager", "showFromViewController:", StubVoid},
     {"MTGSplashAD", "isADReadyToShow", StubBOOL},
 
     // InMobi 10/11 (Swift)
     {"_TtC9InMobiSDK14IMInterstitial", "isReady", StubBOOL},
-    {"_TtC9InMobiSDK14IMInterstitial", "showFrom:", StubVoid},
-    {"_TtC9InMobiSDK14IMInterstitial", "showFrom:with:", StubVoid},
 
     // Chartboost 9
-    {"CHBInterstitial", "showFromViewController:", StubVoid},
-    {"CHBRewarded", "showFromViewController:", StubVoid},
-    {"CHBBanner", "showFromViewController:", StubVoid},
 
     // Moloco 3/4 (Swift)
     {"_TtC9MolocoSDK21PublisherFullscreenAd", "isReady", StubBOOL},
-    {"_TtC9MolocoSDK21PublisherFullscreenAd", "showFrom:", StubVoid},
-    {"_TtC9MolocoSDK21PublisherFullscreenAd", "showFrom:muted:", StubVoid},
 
     // Ogury
     {"OguryInterstitialAd", "isLoaded", StubBOOL},
-    {"OguryInterstitialAd", "showAdInViewController:", StubVoid},
     {"OguryRewardedAd", "isLoaded", StubBOOL},
-    {"OguryRewardedAd", "showAdInViewController:", StubVoid},
     {"OguryThumbnailAd", "isLoaded", StubBOOL},
 
     // MobileFuse
     {"MFInterstitialAd", "isAdReady", StubBOOL},
-    {"MFInterstitialAd", "showAd", StubVoid},
     {"MFRewardedAd", "isAdReady", StubBOOL},
-    {"MFRewardedAd", "showAd", StubVoid},
 
     // Start.io (StartApp)
     {"STAStartAppAd", "isReady", StubBOOL},
-    {"STAStartAppAd", "showAd", StubVoid},
-    {"STAStartAppAd", "showAdWithAdTag:", StubVoid},
 
     // Smaato 10 (iSoma)
     {"SOMAInterstitialAdView", "isReady", StubBOOL},
-    {"SOMAInterstitialAdView", "show", StubVoid},
     {"SOMAInterstitialVideoAdView", "isReady", StubBOOL},
-    {"SOMAInterstitialVideoAdView", "show", StubVoid},
     {"SOMAMultiFormatInterstitial", "isReady", StubBOOL},
-    {"SOMAMultiFormatInterstitial", "show", StubVoid},
 
     // Tapjoy
-    {"TJPlacement", "showContentWithViewController:", StubVoid},
 };
 
 // Class-method "is ready" checks (hook the metaclass).
@@ -523,20 +483,10 @@ static const AdHook kAdClassHooks[] = {
     {"FYBInterstitial", "isAvailable:", StubBOOL},
     {"FYBRewarded", "isAvailable:", StubBOOL},
 
-    // ironSource demand-only show calls
-    {"IronSource", "showISDemandOnlyInterstitial:instanceId:", StubVoid},
-    {"IronSource", "showISDemandOnlyRewardedVideo:instanceId:", StubVoid},
-    // FairBid show calls
-    {"FYBInterstitial", "show:", StubVoid},
-    {"FYBInterstitial", "show:options:", StubVoid},
-    {"FYBRewarded", "show:", StubVoid},
-    {"FYBRewarded", "show:options:", StubVoid},
-    // Appodeal 3/4 (all return BOOL)
+    // Appodeal 3/4
     {"Appodeal", "isReadyForShowWithStyle:", StubBOOL},
     {"Appodeal", "canShow:forPlacement:", StubBOOL},
     {"Appodeal", "canShowAd:forPlacement:", StubBOOL},
-    {"Appodeal", "showAd:rootViewController:", StubBOOL},
-    {"Appodeal", "showAd:forPlacement:rootViewController:", StubBOOL},
 };
 
 #pragma mark - Jailbreak-detection bypass table
@@ -780,6 +730,10 @@ static NSString *webSpeedJS(float rate, BOOL speedVideo, BOOL compressTimers, BO
         [js appendFormat:
             @"function setR(x,r){try{if(x.playbackRate!==r)x.playbackRate=r;}catch(e){}}"
              "function bv(){var v=document.getElementsByTagName('video');for(var i=0;i<v.length;i++){var x=v[i];%@setR(x,vis?R:1);"
+             // Hidden page (preloaded ad): pause its video so it isn't decoded in the
+             // background; play again once the page is shown.
+             "if(!vis){if(!x.paused){x.__aspP=1;try{x.pause();}catch(e){}}}"
+             "else if(x.__aspP){x.__aspP=0;try{var q=x.play();if(q&&q.catch)q.catch(function(){});}catch(e){}}"
              "if(!x.__asp){x.__asp=1;x.addEventListener('ratechange',function(){if(vis&&this.playbackRate<R)this.playbackRate=R;},true);}}}"
              "oSI(function(){if(vis)bv();},1000);document.addEventListener('play',bv,true);document.addEventListener('loadedmetadata',bv,true);", inlineJS];
     }
@@ -814,7 +768,7 @@ static NSString *webSpeedJS(float rate, BOOL speedVideo, BOOL compressTimers, BO
 }
 %end
 
-#pragma mark - Network-level ad blocking ("Block ads")
+#pragma mark - Network-level ad blocking ("Block ad servers")
 
 // Ad hosts, matched with subdomains. Shared hosts (CDNs, facebook.com, unity3d.com,
 // yandex.net) are left out so logins and game services keep working.
@@ -894,8 +848,13 @@ static BOOL aspIsAdURL(NSURL *url) {
     return NO;
 }
 
-// Fails ad requests with "cannot find host", like a DNS block.
+// Fails ad requests with "cannot find host", like a DNS block. The failure comes after a
+// delay: an instant one makes SDKs and games retry in a tight loop on the main thread.
+static const NSTimeInterval kAspBlockDelay = 3.0;
+
 @interface ASPAdBlockProtocol : NSURLProtocol
+@property (atomic) BOOL stopped;
+@property (nonatomic, strong) NSThread *loadThread;
 @end
 
 @implementation ASPAdBlockProtocol
@@ -909,6 +868,20 @@ static BOOL aspIsAdURL(NSURL *url) {
 #ifdef ADSPEED_DEBUG
     aspLog(@"blocked ad request: %@", self.request.URL.host);
 #endif
+    // Client callbacks belong on the thread that called -startLoading (it runs a run loop).
+    self.loadThread = [NSThread currentThread];
+    __weak ASPAdBlockProtocol *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(kAspBlockDelay * NSEC_PER_SEC)),
+                   dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        ASPAdBlockProtocol *me = weakSelf;
+        if (!me || me.stopped || !me.loadThread) return;
+        [me performSelector:@selector(aspFail) onThread:me.loadThread withObject:nil
+              waitUntilDone:NO modes:@[NSRunLoopCommonModes]];
+    });
+}
+- (void)aspFail {
+    if (self.stopped) return;
+    self.stopped = YES;
     NSError *err = [NSError errorWithDomain:NSURLErrorDomain
                                        code:NSURLErrorCannotFindHost
                                    userInfo:@{NSURLErrorFailingURLErrorKey: self.request.URL ?: [NSNull null],
@@ -916,6 +889,7 @@ static BOOL aspIsAdURL(NSURL *url) {
     [self.client URLProtocol:self didFailWithError:err];
 }
 - (void)stopLoading {
+    self.stopped = YES;
 }
 @end
 
@@ -944,6 +918,121 @@ static void aspInjectProtocol(NSURLSessionConfiguration *config) {
 %end
 
 %end // group NetBlock
+
+#pragma mark - App Store block ("Block App Store")
+
+// Ads open the store on their own (auto-redirect, end card, mis-tap). Blocked here:
+//   - the in-app store sheet (SKStoreProductViewController) and the SKOverlay banner;
+//   - openURL to App Store links or ad hosts (click trackers that redirect to the store);
+//   - any openURL / Safari view while an ad is on screen.
+// The SDK gets a normal "failed / dismissed" callback, so the ad flow and reward go on.
+
+static BOOL aspIsStoreURL(NSURL *url) {
+    NSString *scheme = url.scheme.lowercaseString ?: @"";
+    if ([scheme hasPrefix:@"itms"]) return YES;   // itms, itms-apps, itms-appss, itmss
+    NSString *h = url.host.lowercaseString ?: @"";
+    return [h isEqualToString:@"apps.apple.com"] || [h isEqualToString:@"itunes.apple.com"]
+        || [h isEqualToString:@"appsto.re"] || [h hasSuffix:@".apps.apple.com"];
+}
+
+static BOOL aspShouldBlockURL(NSURL *url) {
+    if (!gBlockStore || !url) return NO;
+    BOOL block = aspIsStoreURL(url) || aspIsAdURL(url) || aspAdDepth() > 0;
+#ifdef ADSPEED_DEBUG
+    if (block) aspLog(@"blocked open: %@", url);
+#endif
+    return block;
+}
+
+static id aspDelegate(id obj) {
+    @try { return [obj valueForKey:@"delegate"]; } @catch (__unused NSException *e) { return nil; }
+}
+
+static NSError *aspStoreError(void) {
+    return [NSError errorWithDomain:@"SKErrorDomain" code:0 /* SKErrorUnknown */ userInfo:nil];
+}
+
+%group StoreBlock
+
+%hook UIApplication
+- (void)openURL:(NSURL *)url options:(NSDictionary *)options completionHandler:(void (^)(BOOL))completion {
+    if (aspShouldBlockURL(url)) {
+        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(NO); });
+        return;
+    }
+    %orig;
+}
+- (BOOL)openURL:(NSURL *)url {
+    if (aspShouldBlockURL(url)) return NO;
+    return %orig;
+}
+%end
+
+%hook UIScene
+- (void)openURL:(NSURL *)url options:(id)options completionHandler:(void (^)(BOOL))completion {
+    if (aspShouldBlockURL(url)) {
+        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(NO); });
+        return;
+    }
+    %orig;
+}
+%end
+
+%hook SKStoreProductViewController
+- (void)loadProductWithParameters:(NSDictionary *)params completionBlock:(void (^)(BOOL, NSError *))block {
+#ifdef ADSPEED_DEBUG
+    aspLog(@"blocked store sheet: %@", params);
+#endif
+    if (block) dispatch_async(dispatch_get_main_queue(), ^{ block(NO, aspStoreError()); });
+}
+- (void)loadProductWithParameters:(NSDictionary *)params impression:(id)impression completionBlock:(void (^)(BOOL, NSError *))block {
+    if (block) dispatch_async(dispatch_get_main_queue(), ^{ block(NO, aspStoreError()); });
+}
+%end
+
+%hook SKOverlay
+- (void)presentInScene:(id)scene {
+#ifdef ADSPEED_DEBUG
+    aspLog(@"blocked SKOverlay");
+#endif
+    id d = aspDelegate(self);
+    SEL fail = NSSelectorFromString(@"storeOverlay:didFailToLoadWithError:");
+    if (d && [d respondsToSelector:fail]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            ((void (*)(id, SEL, id, NSError *))objc_msgSend)(d, fail, self, aspStoreError());
+        });
+    }
+}
+%end
+
+%hook UIViewController
+- (void)presentViewController:(UIViewController *)vc animated:(BOOL)animated completion:(void (^)(void))completion {
+    static Class storeVC, safariVC;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        storeVC = objc_getClass("SKStoreProductViewController");
+        safariVC = objc_getClass("SFSafariViewController");
+    });
+    BOOL isStore = storeVC && [vc isKindOfClass:storeVC];
+    BOOL isSafari = safariVC && [vc isKindOfClass:safariVC] && aspAdDepth() > 0;
+    if (gBlockStore && (isStore || isSafari)) {
+#ifdef ADSPEED_DEBUG
+        aspLog(@"blocked %s", class_getName(object_getClass(vc)));
+#endif
+        // Report it as closed, like the user dismissed it.
+        dispatch_async(dispatch_get_main_queue(), ^{
+            id d = aspDelegate(vc);
+            SEL done = NSSelectorFromString(isStore ? @"productViewControllerDidFinish:" : @"safariViewControllerDidFinish:");
+            if (d && [d respondsToSelector:done]) ((void (*)(id, SEL, id))objc_msgSend)(d, done, vc);
+            if (completion) completion();
+        });
+        return;
+    }
+    %orig;
+}
+%end
+
+%end // group StoreBlock
 
 #pragma mark - Bootstrap
 
@@ -1062,8 +1151,9 @@ static NSDictionary *aspJailedConfig(void) {
         gVideoRate = rateVal ? [rateVal floatValue] : defaultRate;
         if (gVideoRate < 1.0f) gVideoRate = 1.0f;
 
-        gBlockNet   = prefBool(prefs, key(kKeyBlockAds), NO);
-        gInstallAds = prefBool(prefs, key(kKeyBlockStubs), NO);
+        gBlockNet   = prefBool(prefs, key(kKeyBlockNet), NO);
+        gInstallAds = prefBool(prefs, key(kKeyBlockAds), NO) || prefBool(prefs, key(kKeyBlockStubsOld), NO);
+        gBlockStore = prefBool(prefs, key(kKeyBlockStore), NO);
         gInstallJB  = prefBool(prefs, key(kKeyBypassJB), defaultBypassJB);
 
         if (gBlockNet) {
@@ -1075,8 +1165,14 @@ static NSDictionary *aspJailedConfig(void) {
         _dyld_register_func_for_add_image(&imageAdded); // + lazily-loaded ad SDKs
 
         // Jailed without a settings file keeps the old web-only behaviour.
-        if (gSpeedVideo && haveConfig) {
+        if ((gSpeedVideo && haveConfig) || gBlockStore) {
             %init(AdContext);
+        }
+        if (gBlockStore) {
+            // Load the classes so the hooks find them even if no SDK has loaded StoreKit yet.
+            dlopen("/System/Library/Frameworks/StoreKit.framework/StoreKit", RTLD_LAZY);
+            dlopen("/System/Library/Frameworks/SafariServices.framework/SafariServices", RTLD_LAZY);
+            %init(StoreBlock);
         }
         // Single ungrouped %init (logos counts %init across the file, ignoring #ifdef):
         // installs the AVPlayer + WKWebView hooks, which self-gate on the flags above.

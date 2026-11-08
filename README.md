@@ -16,11 +16,13 @@ The jailed build has no Settings bundle; it reads an optional `adspeed.plist` in
 
 ## Behavior
 
-- **Block ads** fails requests to known ad hosts with "cannot find host", so every SDK, Swift ones included, reports a normal load failure. Shared hosts (`facebook.com`, `unity3d.com`, `yandex.net`) are not blocked.
-- **Aggressive SDK stubs** (off by default) also stubs ready/show methods of known ad SDKs. Use it only if ads still appear: it can stall apps that wait for an ad.
+- **Block ads** makes the "is an ad ready" checks of known ad SDKs return no, so the app skips the ad. Show/present calls are never stubbed: the app would wait for a callback that never comes.
+- **Block ad servers** (off by default) also fails requests to known ad hosts like a DNS block, after a 3 s delay so SDK retry loops can't spin. Some apps then keep waiting for an ad that never loads. Shared hosts (`facebook.com`, `unity3d.com`, `yandex.net`) are not blocked.
 - `AVPlayer` videos speed up while a known full-screen ad controller is on screen. Enable **Include native video** to speed up other `AVPlayer` videos too.
 - HTML video in `WKWebView` speeds up in enabled apps when **Speed up video** is on, including non-ad web video.
 - Jailbreak detection bypasses are controlled by a separate option.
+- **Block App Store** (off by default) stops ads from opening the store: the in-app store sheet and `SKOverlay` banner are refused, `openURL` to App Store links and ad hosts is dropped, and while an ad is on screen no link leaves the app. The SDK gets a normal "closed" or "failed" callback.
+- Players an ad sped up go back to normal speed when it closes; the app's own players are left alone. In off-screen web views (preloaded ads) video is paused and timers run at normal speed until the view is shown.
 - The tweak runs only in apps enabled from its Settings list.
 
 Supported SDK patterns include Google AdMob, AppLovin, ironSource, Meta Audience Network, Google IMA, Vungle, Snap Ads, React Native Google Mobile Ads, Unity Ads, Pangle, Mintegral, InMobi, Chartboost, FairBid, DT Exchange, Moloco, BidMachine, Amazon APS, Ogury, MobileFuse, myTarget, HyprMX, Start.io, Appodeal, Yandex, Bigo, Smaato, Tapjoy, and AdColony.

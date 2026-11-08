@@ -23,7 +23,10 @@ Options (missing keys use the default)
   CompressTimers    false  Speed up ad countdowns (setTimeout / setInterval).
   AccelerateClock   false  Also speed up Date.now / performance.now.
   ForceInline       false  Keep web video inline; can break some ads.
-  BlockAds          false  Block requests to ad servers.
-  BlockAdsStubs     false  Patch ad SDK methods; can stall apps that wait for an ad.
+  BlockAds          false  Ad SDKs report that no ad is ready, so the app skips it.
+  BlockAdServers    false  Also block ad servers; some apps then wait for an ad that
+                           never loads.
+  BlockStore        false  Don't let ads open the App Store (store page, banner,
+                           redirect) or any link while an ad is on screen.
   BypassJailbreak   false  Stub jailbreak checks in some ad SDKs (not needed without a
                            jailbreak).

@@ -23,9 +23,7 @@
 
         NSString *enableKey = [@"enabled-" stringByAppendingString:[self bid]];
         BOOL enabled  = [self boolPref:enableKey default:NO];
-        BOOL blockNet = [self boolPref:[self k:@"BlockAds"] default:NO];
-        BOOL blockStb = [self boolPref:[self k:@"BlockAdsStubs"] default:NO];
-        BOOL blocked  = blockNet || blockStb;
+        BOOL blocked  = [self boolPref:[self k:@"BlockAds"] default:NO];
         BOOL speedOn  = [self boolPref:[self k:@"SpeedUpVideo"] default:YES];
         BOOL timersOn = [self boolPref:[self k:@"CompressTimers"] default:NO];
         // Everything but the Enabled switch is greyed while the app is off; the speed-up
@@ -39,10 +37,17 @@
 
         [specs addObject:[self groupNamed:@"Block ads"
                                    footer:!enabled ? @"Enable this app first."
-                                   : @"“Block ads” blocks requests to ad servers. “Aggressive SDK stubs” also patches ad SDK "
-                                     @"methods; it can stall some apps, so turn it on only if ads still appear."]];
+                                   : @"“Block ads” makes ad SDKs report that no ad is ready, so the app skips it. "
+                                     @"“Block ad servers” also cuts ad network traffic; some apps then keep waiting for an ad "
+                                     @"that never loads, so leave it off unless ads still get through."]];
         [specs addObject:[self disable:[self switchSpecifierNamed:@"Block ads" key:[self k:@"BlockAds"] default:NO] when:!enabled]];
-        [specs addObject:[self disable:[self subSwitchNamed:@"Aggressive SDK stubs" key:[self k:@"BlockAdsStubs"] default:NO] when:!enabled]];
+        [specs addObject:[self disable:[self subSwitchNamed:@"Block ad servers" key:[self k:@"BlockAdServers"] default:NO] when:!enabled]];
+
+        [specs addObject:[self groupNamed:@"App Store"
+                                   footer:!enabled ? @"Enable this app first."
+                                   : @"Stops ads from opening the App Store on their own: no store page or banner inside "
+                                     @"the app, no jump to the App Store, and no links out while an ad is on screen."]];
+        [specs addObject:[self disable:[self switchSpecifierNamed:@"Block App Store" key:[self k:@"BlockStore"] default:NO] when:!enabled]];
 
         [specs addObject:[self groupNamed:@"Fast-forward ads"
                                    footer:!enabled ? @"Enable this app first."
@@ -83,7 +88,6 @@
     NSString *changed = [specifier propertyForKey:@"key"];
     if ([changed isEqualToString:[@"enabled-" stringByAppendingString:[self bid]]] ||
         [changed isEqualToString:[self k:@"BlockAds"]] ||
-        [changed isEqualToString:[self k:@"BlockAdsStubs"]] ||
         [changed isEqualToString:[self k:@"SpeedUpVideo"]] ||
         [changed isEqualToString:[self k:@"CompressTimers"]]) {
         _specifiers = nil;

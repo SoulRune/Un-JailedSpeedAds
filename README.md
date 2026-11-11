@@ -21,7 +21,7 @@ The jailed build has no Settings bundle; it reads an optional `adspeed.plist` in
 - `AVPlayer` videos speed up while a known full-screen ad controller is on screen. Enable **Include native video** to speed up other `AVPlayer` videos too.
 - HTML video in `WKWebView` speeds up in enabled apps when **Speed up video** is on, including non-ad web video.
 - Jailbreak detection bypasses are controlled by a separate option.
-- **Block App Store** (off by default) stops ads from opening the store: the in-app store sheet and `SKOverlay` banner are refused, `openURL` to App Store links and ad hosts is dropped, and while an ad is on screen no link leaves the app. The SDK gets a normal "closed" or "failed" callback.
+- **Block App Store** (off by default) stops ads from opening the store: the in-app store sheet and `SKOverlay` banner are refused, `openURL` to App Store links and ad hosts is dropped, and while an ad is on screen no link leaves the app. The SDK's own completion handlers report a failure; its delegates are never called on its behalf.
 - Players an ad sped up go back to normal speed when it closes; the app's own players are left alone. In off-screen web views (preloaded ads) video is paused and timers run at normal speed until the view is shown.
 - The tweak runs only in apps enabled from its Settings list.
 

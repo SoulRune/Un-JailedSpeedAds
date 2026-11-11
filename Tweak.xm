@@ -18,7 +18,6 @@
 
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
-#import <objc/message.h>
 #import <substrate.h>
 #import <mach-o/dyld.h>
 #import <dlfcn.h>
@@ -925,7 +924,8 @@ static void aspInjectProtocol(NSURLSessionConfiguration *config) {
 //   - the in-app store sheet (SKStoreProductViewController) and the SKOverlay banner;
 //   - openURL to App Store links or ad hosts (click trackers that redirect to the store);
 //   - any openURL / Safari view while an ad is on screen.
-// The SDK gets a normal "failed / dismissed" callback, so the ad flow and reward go on.
+// Only the SDK's own completion handlers are called (with a failure); its delegates are
+// never called on its behalf, since some are forwarding proxies that crash on it.
 
 static BOOL aspIsStoreURL(NSURL *url) {
     NSString *scheme = url.scheme.lowercaseString ?: @"";
@@ -942,10 +942,6 @@ static BOOL aspShouldBlockURL(NSURL *url) {
     if (block) aspLog(@"blocked open: %@", url);
 #endif
     return block;
-}
-
-static id aspDelegate(id obj) {
-    @try { return [obj valueForKey:@"delegate"]; } @catch (__unused NSException *e) { return nil; }
 }
 
 static NSError *aspStoreError(void) {
@@ -995,13 +991,7 @@ static NSError *aspStoreError(void) {
 #ifdef ADSPEED_DEBUG
     aspLog(@"blocked SKOverlay");
 #endif
-    id d = aspDelegate(self);
-    SEL fail = NSSelectorFromString(@"storeOverlay:didFailToLoadWithError:");
-    if (d && [d respondsToSelector:fail]) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            ((void (*)(id, SEL, id, NSError *))objc_msgSend)(d, fail, self, aspStoreError());
-        });
-    }
+    // Not shown, and no delegate is called on the SDK's behalf (see presentViewController).
 }
 %end
 
@@ -1019,13 +1009,10 @@ static NSError *aspStoreError(void) {
 #ifdef ADSPEED_DEBUG
         aspLog(@"blocked %s", class_getName(object_getClass(vc)));
 #endif
-        // Report it as closed, like the user dismissed it.
-        dispatch_async(dispatch_get_main_queue(), ^{
-            id d = aspDelegate(vc);
-            SEL done = NSSelectorFromString(isStore ? @"productViewControllerDidFinish:" : @"safariViewControllerDidFinish:");
-            if (d && [d respondsToSelector:done]) ((void (*)(id, SEL, id))objc_msgSend)(d, done, vc);
-            if (completion) completion();
-        });
+        // Not shown; only the caller's own completion runs. Its delegate is never called on
+        // its behalf: in Unity games it can be a forwarding proxy that crashes on a call it
+        // did not expect (EXC_BAD_ACCESS in objc_retain under -forwardInvocation:).
+        if (completion) dispatch_async(dispatch_get_main_queue(), completion);
         return;
     }
     %orig;

@@ -13,8 +13,9 @@
 //     block, after a delay so SDK retry loops can't spin. Ads that wait for a load may
 //     then never show.
 // Video is sped up only while a known ad view-controller is on screen (aspAdDepth).
-// "Block App Store" (off by default): no store sheet / overlay / redirect from ads, and no
-// links out while an ad is on screen.
+// "Block App Store" (off by default): no store sheet / overlay / redirect from ads (an ad on
+// screen or closed under 3 s ago, or an ad host link), and no links out while an ad is on
+// screen. The app's own store links (rate, update, more games) still open.
 
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
@@ -594,6 +595,14 @@ static NSUInteger aspAdDepth(void) {
     @synchronized (aspAdVCs()) { return [aspAdVCs() allObjects].count; }
 }
 
+// When the last ad view-controller went away; store links shortly after still count as the ad's.
+static CFAbsoluteTime gLastAdEnd = 0;
+static const CFAbsoluteTime kAspPostAdWindow = 3.0;
+
+static BOOL aspInAdContext(void) {
+    return aspAdDepth() > 0 || (gLastAdEnd > 0 && CFAbsoluteTimeGetCurrent() - gLastAdEnd < kAspPostAdWindow);
+}
+
 static void aspRestorePlayers(void) {
     NSArray *players;
     @synchronized (aspBoosted()) {
@@ -644,7 +653,10 @@ static void aspRestorePlayers(void) {
         [aspAdVCs() removeObject:self];
         last = [aspAdVCs() allObjects].count == 0;
     }
-    if (last) aspRestorePlayers();
+    if (last) {
+        gLastAdEnd = CFAbsoluteTimeGetCurrent();
+        aspRestorePlayers();
+    }
 }
 %end
 
@@ -701,7 +713,9 @@ static void aspRestorePlayers(void) {
 // <video> is on screen, so they don't desync/freeze a video ad.
 static NSString *webSpeedJS(float rate, BOOL speedVideo, BOOL compressTimers, BOOL accelClock, BOOL forceInline) {
     NSMutableString *js = [NSMutableString stringWithFormat:
-        @"(function(){var R=%0.1f;if(R<1)R=1;"
+        // Guard: an SDK that reuses one configuration / content controller for several web
+        // views would otherwise run the script several times per page (timers divided by R^n).
+        @"(function(){if(window.__aspInstalled)return;window.__aspInstalled=1;var R=%0.1f;if(R<1)R=1;"
          "var oST=window.setTimeout,oSI=window.setInterval,oDN=Date.now;var fast=true;"
          // A hidden page (web view off screen: preloaded or closed ad) runs at normal speed.
          "var vis=!document.hidden;function on(){return fast&&vis;}", rate];
@@ -755,10 +769,22 @@ static NSString *webSpeedJS(float rate, BOOL speedVideo, BOOL compressTimers, BO
             configuration.allowsInlineMediaPlayback = YES;
             configuration.mediaTypesRequiringUserActionForPlayback = WKAudiovisualMediaTypeNone;
         }
-        WKUserScript *s = [[WKUserScript alloc] initWithSource:webSpeedJS(gVideoRate, gSpeedVideo, gWebTimers, gWebClock, gForceInline)
-                                                 injectionTime:WKUserScriptInjectionTimeAtDocumentStart
-                                              forMainFrameOnly:NO];
-        [configuration.userContentController addUserScript:s];
+        // The content controller is shared, not copied, between web views made from one
+        // configuration: add the script to it once.
+        static NSString *src;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{ src = webSpeedJS(gVideoRate, gSpeedVideo, gWebTimers, gWebClock, gForceInline); });
+        WKUserContentController *ucc = configuration.userContentController;
+        BOOL present = NO;
+        for (WKUserScript *u in ucc.userScripts) {
+            if ([u.source isEqualToString:src]) { present = YES; break; }
+        }
+        if (!present) {
+            WKUserScript *s = [[WKUserScript alloc] initWithSource:src
+                                                     injectionTime:WKUserScriptInjectionTimeAtDocumentStart
+                                                  forMainFrameOnly:NO];
+            [ucc addUserScript:s];
+        }
 #ifdef ADSPEED_DEBUG
         aspLog(@"WKWebView created -> injected web speed-up");
 #endif
@@ -920,10 +946,12 @@ static void aspInjectProtocol(NSURLSessionConfiguration *config) {
 
 #pragma mark - App Store block ("Block App Store")
 
-// Ads open the store on their own (auto-redirect, end card, mis-tap). Blocked here:
+// Ads open the store on their own (auto-redirect, end card, mis-tap). Blocked here, while an
+// ad is on screen or for 3 s after it closes (aspInAdContext):
 //   - the in-app store sheet (SKStoreProductViewController) and the SKOverlay banner;
-//   - openURL to App Store links or ad hosts (click trackers that redirect to the store);
-//   - any openURL / Safari view while an ad is on screen.
+//   - openURL to App Store links;
+// and always openURL to ad hosts (click trackers that redirect to the store), and any
+// openURL / Safari view while an ad is on screen. Outside ads the app's own store links work.
 // Only the SDK's own completion handlers are called (with a failure); its delegates are
 // never called on its behalf, since some are forwarding proxies that crash on it.
 
@@ -937,11 +965,20 @@ static BOOL aspIsStoreURL(NSURL *url) {
 
 static BOOL aspShouldBlockURL(NSURL *url) {
     if (!gBlockStore || !url) return NO;
-    BOOL block = aspIsStoreURL(url) || aspIsAdURL(url) || aspAdDepth() > 0;
+    BOOL block = aspIsAdURL(url) || aspAdDepth() > 0 || (aspIsStoreURL(url) && aspInAdContext());
 #ifdef ADSPEED_DEBUG
     if (block) aspLog(@"blocked open: %@", url);
 #endif
     return block;
+}
+
+// Decision taken when a store sheet loads, so its presentation follows it even if the 3 s
+// window ends in between.
+static const char kAspStoreBlockedKey = 0;
+
+static BOOL aspStoreSheetBlocked(UIViewController *vc) {
+    NSNumber *n = objc_getAssociatedObject(vc, &kAspStoreBlockedKey);
+    return n ? n.boolValue : aspInAdContext();
 }
 
 static NSError *aspStoreError(void) {
@@ -976,18 +1013,25 @@ static NSError *aspStoreError(void) {
 
 %hook SKStoreProductViewController
 - (void)loadProductWithParameters:(NSDictionary *)params completionBlock:(void (^)(BOOL, NSError *))block {
+    BOOL blocked = aspInAdContext();
+    objc_setAssociatedObject(self, &kAspStoreBlockedKey, @(blocked), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!blocked) { %orig; return; }
 #ifdef ADSPEED_DEBUG
     aspLog(@"blocked store sheet: %@", params);
 #endif
     if (block) dispatch_async(dispatch_get_main_queue(), ^{ block(NO, aspStoreError()); });
 }
 - (void)loadProductWithParameters:(NSDictionary *)params impression:(id)impression completionBlock:(void (^)(BOOL, NSError *))block {
+    BOOL blocked = aspInAdContext();
+    objc_setAssociatedObject(self, &kAspStoreBlockedKey, @(blocked), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!blocked) { %orig; return; }
     if (block) dispatch_async(dispatch_get_main_queue(), ^{ block(NO, aspStoreError()); });
 }
 %end
 
 %hook SKOverlay
 - (void)presentInScene:(id)scene {
+    if (!aspInAdContext()) { %orig; return; }
 #ifdef ADSPEED_DEBUG
     aspLog(@"blocked SKOverlay");
 #endif
@@ -1003,7 +1047,7 @@ static NSError *aspStoreError(void) {
         storeVC = objc_getClass("SKStoreProductViewController");
         safariVC = objc_getClass("SFSafariViewController");
     });
-    BOOL isStore = storeVC && [vc isKindOfClass:storeVC];
+    BOOL isStore = storeVC && [vc isKindOfClass:storeVC] && aspStoreSheetBlocked(vc);
     BOOL isSafari = safariVC && [vc isKindOfClass:safariVC] && aspAdDepth() > 0;
     if (gBlockStore && (isStore || isSafari)) {
 #ifdef ADSPEED_DEBUG

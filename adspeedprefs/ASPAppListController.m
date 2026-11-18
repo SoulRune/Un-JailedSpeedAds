@@ -46,7 +46,8 @@
         [specs addObject:[self groupNamed:@"App Store"
                                    footer:!enabled ? @"Enable this app first."
                                    : @"Stops ads from opening the App Store on their own: no store page or banner inside "
-                                     @"the app, no jump to the App Store, and no links out while an ad is on screen."]];
+                                     @"the app, no jump to the App Store, and no links out while an ad is on screen. "
+                                     @"The app's own store links still work."]];
         [specs addObject:[self disable:[self switchSpecifierNamed:@"Block App Store" key:[self k:@"BlockStore"] default:NO] when:!enabled]];
 
         [specs addObject:[self groupNamed:@"Fast-forward ads"
